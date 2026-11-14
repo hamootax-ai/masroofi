@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.6.1';
+export const APP_VERSION = '1.6.2';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -793,7 +793,7 @@ VIEWS.settings = () => {
     <button class="btn pri" data-act="saveBudget">احفظ</button></div>
 
   <h2>🗂️ التصنيفات</h2><div class="card">
-    <div class="field"><span>حجم الخط</span><div class="seg" id="fontSeg">${[[1, 'عادي'], [1.12, 'كبير'], [1.25, 'أكبر']].map(([v, l]) => `<button type="button" data-fs="${v}" class="${(s.fontScale || 1) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="field"><span>حجم الخط</span><div class="seg" id="fontSeg">${[[1, 'عادي'], [1.12, 'كبير'], [1.25, 'أكبر']].map(([v, l]) => `<button type="button" data-fs="${v}" class="${(s.fontScale || 1.12) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <label class="toggle"><span>رتّب أزرار التصنيفات حسب الاستخدام</span><input id="sortByUse" type="checkbox" ${s.sortByUse ? 'checked' : ''}></label>
     <div id="catList">${cats.map((c, i) => `<div class="catedit" data-id="${c.id}">
       <input type="text" class="cIcon" value="${esc(c.icon || '')}" style="text-align:center">
@@ -1240,7 +1240,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------- Boot ----------------
-function applyFontScale() { document.documentElement.style.setProperty('--fs', (16 * (settings().fontScale || 1)).toFixed(1) + 'px'); }
+function applyFontScale() { document.documentElement.style.setProperty('--fs', (16 * (settings().fontScale || 1.12)).toFixed(1) + 'px'); }
 async function boot() {
   try { await load(); }
   catch (err) { $('#view').innerHTML = `<div class="banner red">ما قدرت أفتح التخزين: ${esc(err.message || err)}</div>`; return; }
