@@ -5,7 +5,9 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
+// (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
+const MANUAL_ONLY = true;
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
@@ -160,7 +162,7 @@ VIEWS.add = () => {
     <label class="field toggle" style="margin-top:28px"><span>رفاهية</span><input id="qaRafah" type="checkbox" ${q.rafah ? 'checked' : ''} ${cat?.kind === 'sadaqa' ? 'disabled' : ''}></label></div>
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
-  <button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك${reviewCount() ? ` <span class="pill warn" id="reviewBadge">${reviewCount()} بدها مراجعة</span>` : ''}</button>${inboxOn() ? `<div class="sub" style="text-align:center" id="homeLastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}</div>` : ''}
+  ${MANUAL_ONLY ? '' : `<button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك${reviewCount() ? ` <span class="pill warn" id="reviewBadge">${reviewCount()} بدها مراجعة</span>` : ''}</button>${inboxOn() ? `<div class="sub" style="text-align:center" id="homeLastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}</div>` : ''}`}
   <details class="card" id="pasteBox" ${ui.parsed ? 'open' : ''}>
     <summary>📋 الصق ملاحظة اليوم</summary>
     <textarea id="noteText" placeholder="November 13&#10;20jd groceries&#10;13.15 gasoline&#10;Total 33.15 JD // Rafaheyah 0 JD" dir="auto">${esc(ui.noteText || '')}</textarea>
@@ -741,7 +743,7 @@ function openReview() {
   if (q.length && !ui.sms) ui.sms = { items: q.map(i => prepItem({ ...i })), dups: 0, review: true };
 }
 function autoPull() {
-  if (!inboxOn() || document.visibilityState !== 'visible' || Date.now() - lastAutoPull < 30000) return;
+  if (MANUAL_ONLY || !inboxOn() || document.visibilityState !== 'visible' || Date.now() - lastAutoPull < 30000) return;
   lastAutoPull = Date.now();
   pullInbox({ silent: true });
 }
@@ -782,12 +784,12 @@ VIEWS.settings = () => {
       <input type="text" class="cSubs" value="${esc((c.subs || []).join('، '))}" placeholder="تفاصيل مفصولة بفاصلة (اختياري)"></div></div>`).join('')}</div>
     <div class="btns"><button class="btn" data-act="catAdd">➕ تصنيف</button><button class="btn pri" data-act="catSave">احفظ التصنيفات</button></div></div>
 
-  <h2>📥 صندوق الرسائل التلقائي</h2><div class="card">
+  ${MANUAL_ONLY ? '' : `  <h2>📥 صندوق الرسائل التلقائي</h2><div class="card">
     <label class="field"><span>توكن GitHub ${inboxCfg().token ? '<span class="pill good">محفوظ</span>' : ''}</span><input id="inboxToken" type="password" dir="ltr" autocomplete="off" placeholder="${inboxCfg().token ? '•••••• (محفوظ)' : 'github_pat_...'}"></label>
     <label class="field"><span>الريبو</span><input id="inboxRepo" type="text" dir="ltr" value="${esc(inboxCfg().repo || 'hamootax-ai/masroofi-inbox')}"></label>
     <div class="btns"><button class="btn pri" data-act="saveInbox">احفظ</button>${inboxCfg().token ? '<button class="btn" data-act="pullNow">اسحب هلأ</button><button class="btn danger" data-act="delInbox">امسح</button>' : ''}</div>
     <div class="sub">آخر سحب: ${agoText(inboxCfg().lastPull)}${inboxCfg().lastError ? ` · <span class="bad">${esc(inboxCfg().lastError)}</span>` : ''}. التوكن بضل بالتلفون بس، وما بنحط بالنسخة الاحتياطية إلا إذا اخترت.</div>
-    <button class="btn ghost" data-act="go" data-v="sms" style="margin-top:8px">📩 رسائل البنك</button></div>
+    <button class="btn ghost" data-act="go" data-v="sms" style="margin-top:8px">📩 رسائل البنك</button></div>`}
 
   <h2>💾 نسخة احتياطية</h2><div class="card">
     <div class="sub">آخر نسخة: ${state.kv.lastBackup ? dayLabel(ymd(new Date(state.kv.lastBackup))) : 'ولا مرة'}</div>
