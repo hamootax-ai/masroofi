@@ -1,0 +1,5 @@
+screens/
+dev/
+*.json.bak
+masroofi-backup-*.json
+__pycache__/
