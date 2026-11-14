@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.5.1';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -1201,6 +1201,14 @@ function syncDateLabel(e) {
   const lab = inp.parentElement.querySelector('.dlabel');
   lab.textContent = !inp.value ? (lab.dataset.empty || '') : inp.type === 'month' ? monthLabel(inp.value) : dayLabel(inp.value);
 }
+// (2026-11-14, Ahmad: "حد البطاقة بكون 0.000 ... بكتب 1 بصير 0.0001") a money field you tap: a zero clears, any other amount gets
+// selected, so typing replaces it instead of appending to it
+document.addEventListener('focusin', e => {
+  const inp = e.target;
+  if (!(inp instanceof HTMLInputElement) || inp.getAttribute('inputmode') !== 'decimal') return;
+  if (/^[0.,\s]*$/.test(inp.value)) inp.value = '';
+  else setTimeout(() => { try { inp.select(); } catch {} }, 0);
+});
 document.addEventListener('input', syncDateLabel);
 document.addEventListener('click', e => { const inp = e.target.closest?.('.datebox input'); if (inp) { try { inp.showPicker?.(); } catch {} } });
 document.addEventListener('change', syncDateLabel);
