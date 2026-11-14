@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.5.2';
+export const APP_VERSION = '1.6.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -128,7 +128,10 @@ function heroCard() {
   const b = L.balances(state);
   const cc = L.cardCycle(state);
   const bs = backupStatus();
+  const td = today(), spentToday = state.entries.filter(e => e.date === td).reduce((a, e) => a + e.amount, 0);
+  const spentMonth = L.monthStats(state, thisMonth()).total;
   return `<div class="card hero">
+    <div class="spendrow"><div><div class="lbl">صرفت اليوم</div><div class="mid amt" id="spentToday">${jd(spentToday)}</div></div><div><div class="lbl">هالشهر</div><div class="mid amt" id="spentMonth">${jd(spentMonth)}</div></div></div>
     <div class="lbl">الصافي (توفير + كاش − البطاقة)</div>
     <div class="big amt ${b.net < 0 ? 'neg' : ''}" id="netBig">${jd(b.net)}</div>
     <div class="minirow"><span>توفير <b class="amt">${jd(b.savings)}</b></span><span>كاش <b class="amt">${jd(b.cash)}</b></span><span>بطاقة <b class="amt">${jd(b.card)}</b></span></div>
@@ -268,6 +271,20 @@ function entrySheet(e) {
 }
 
 // ----- Month -----
+// (2026-11-14, Ahmad picked "all" of the redesign ideas) where the month's money went, at a glance: a donut + its legend
+const DONUT_COLORS = ['#f2b84b', '#5aa7ff', '#3ccf7e', '#ff7a6b', '#b48cff', '#3fd0c9', '#ff9f43', '#8e98aa'];
+function donut(rows) {
+  const total = rows.reduce((a, [, v]) => a + v, 0) || 1;
+  const top = rows.slice(0, 7);
+  const rest = rows.slice(7).reduce((a, [, v]) => a + v, 0);
+  const parts = top.map(([id, v], i) => ({ c: L.catById(state, id), v, col: DONUT_COLORS[i] }));
+  if (rest > 0) parts.push({ c: { icon: '➕', name: 'الباقي' }, v: rest, col: DONUT_COLORS[7] });
+  const R = 52, C = 2 * Math.PI * R;
+  let off = 0;
+  const arcs = parts.map(p => { const len = p.v / total * C; const a = `<circle r="${R}" cx="70" cy="70" fill="none" stroke="${p.col}" stroke-width="22" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"/>`; off += len; return a; }).join('');
+  const legend = parts.map(p => `<div class="lg"><i style="background:${p.col}"></i><span>${esc(p.c?.icon || '')} ${esc(p.c?.name || 'محذوفة')}</span><b class="amt">${Math.round(p.v / total * 100)}%</b></div>`).join('');
+  return `<div class="donut"><svg viewBox="0 0 140 140" width="140" height="140" aria-hidden="true"><g transform="rotate(-90 70 70)">${arcs}</g></svg><div class="legend">${legend}</div></div>`;
+}
 VIEWS.month = () => {
   const ym = ui.monthYm, prev = addMonths(ym, -1);
   const ms = L.monthStats(state, ym), pm = L.monthStats(state, prev);
@@ -281,6 +298,7 @@ VIEWS.month = () => {
   <div class="card"><div class="catbar"><div class="hd"><span>🎉 الرفاهية</span><span class="amt">${jdShort(r.used)}/${jdShort(r.budget)}</span></div>
     <div class="bar ${r.level}" id="rafahBar"><i style="width:${Math.min(100, r.pct * 100).toFixed(1)}%"></i></div>
     <div class="sub">${r.left >= 0 ? `ضايل ${jd(r.left)}` : `متعدّي بـ ${jd(-r.left)}`}</div></div></div>
+  ${rows.length ? `<div class="card">${donut(rows)}</div>` : ''}
   <div class="card"><h2 style="margin-top:0">حسب التصنيف</h2>
     ${rows.length ? rows.map(([id, v]) => { const c = L.catById(state, id); const pv = pm.byCat[id] || 0; return `<div class="catbar"><div class="hd"><span>${esc(c?.icon || '')} ${esc(c?.name || 'محذوفة')}</span><span class="amt">${jd(v)}</span></div><div class="bar"><i style="width:${(v / max * 100).toFixed(1)}%"></i></div><div class="sub">قبل: <span class="amt">${jd(pv)}</span></div></div>`; }).join('') : '<div class="sub">ما في مصاريف.</div>'}
   </div>
@@ -304,13 +322,13 @@ MONEY.acc = () => {
   </ul>
   <div class="verdict">💳 مستحق يوم ${parseYmd(cc.dueDate).getDate()}: <b class="amt" id="cardDue">${jd(cc.dueAmount)}</b> (${fd(cc.dueDate)})<br><span class="sub">${cc.closed ? `كشف ${fd(cc.stmtDate)}` : `الكشف الجاي ${fd(cc.stmtDate)}، الرقم تقريبي`} · كشف يوم ${settings().stmtDay}، استحقاق يوم ${settings().dueDay}</span></div>
   <button class="btn" data-act="payCard" style="margin-top:10px">سدّد البطاقة من التوفير</button></div>
-  <h2>تحويل بين الحسابات</h2>
-  <div class="card"><div class="row"><label class="field"><span>من</span><select id="tFrom">${accOptions('savings')}</select></label><label class="field"><span>إلى</span><select id="tTo">${accOptions('card')}</select></label></div>
+  <details class="card adv"><summary>🔁 تحويل بين الحسابات <span class="sub">(متقدم)</span></summary><div class="row"><label class="field"><span>من</span><select id="tFrom">${accOptions('savings')}</select></label><label class="field"><span>إلى</span><select id="tTo">${accOptions('card')}</select></label></div>
     <div class="row"><label class="field"><span>المبلغ</span><input id="tAmt" type="text" inputmode="decimal" class="amt" placeholder="0.000"></label><label class="field"><span>ملاحظة</span><input id="tNote" type="text"></label></div>
     <button class="btn pri" data-act="addTransfer">حوّل</button>
     <div class="sub" style="margin-top:6px">سداد البطاقة تحويل، مش مصروف. مصاريف البطاقة انحسبت وقت الشرا.</div>
     ${tr.length ? `<ul class="list" style="margin-top:8px">${tr.map(t => `<li class="item"><div class="ic">🔁</div><div class="main"><div class="t">${L.ACCOUNTS[t.from]} ← ${L.ACCOUNTS[t.to]}</div><div class="s">${fd(t.date)}${t.note ? ' · ' + esc(t.note) : ''}</div></div><div class="v amt">${jd(t.amount)}</div><div class="acts"><button data-act="delTransfer" data-id="${t.id}">🗑️</button></div></li>`).join('')}</ul>` : ''}
-  </div>`;
+ 
+  </details>`;
 };
 MONEY.inc = () => {
   const exp = state.incomes.filter(i => i.status === 'expected').sort((a, b) => a.date.localeCompare(b.date));
@@ -775,6 +793,7 @@ VIEWS.settings = () => {
     <button class="btn pri" data-act="saveBudget">احفظ</button></div>
 
   <h2>🗂️ التصنيفات</h2><div class="card">
+    <div class="field"><span>حجم الخط</span><div class="seg" id="fontSeg">${[[1, 'عادي'], [1.12, 'كبير'], [1.25, 'أكبر']].map(([v, l]) => `<button type="button" data-fs="${v}" class="${(s.fontScale || 1) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <label class="toggle"><span>رتّب أزرار التصنيفات حسب الاستخدام</span><input id="sortByUse" type="checkbox" ${s.sortByUse ? 'checked' : ''}></label>
     <div id="catList">${cats.map((c, i) => `<div class="catedit" data-id="${c.id}">
       <input type="text" class="cIcon" value="${esc(c.icon || '')}" style="text-align:center">
@@ -810,6 +829,7 @@ VIEWS.settings = () => {
 AFTER.settings = () => {
   $('#importIn').addEventListener('change', e => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ''; });
   $('#sortByUse').addEventListener('change', async e => { settings().sortByUse = e.target.checked; await saveSettings(); toast('انحفظ ✓'); });
+  $$('#fontSeg button').forEach(bt => bt.addEventListener('click', async () => { settings().fontScale = Number(bt.dataset.fs); applyFontScale(); await saveSettings(); render(); }));
   navigator.storage?.persisted?.().then(p => { ui.persisted = p; const el = $('#persistState'); if (el) el.innerHTML = p ? '<span class="good">مفعّل ✓</span>' : '<span class="warn">مش مضمون</span>'; }).catch(() => {});
 };
 
@@ -1218,9 +1238,11 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------- Boot ----------------
+function applyFontScale() { document.documentElement.style.setProperty('--fs', (16 * (settings().fontScale || 1)).toFixed(1) + 'px'); }
 async function boot() {
   try { await load(); }
   catch (err) { $('#view').innerHTML = `<div class="banner red">ما قدرت أفتح التخزين: ${esc(err.message || err)}</div>`; return; }
+  applyFontScale();
   if (state.kv.pinHash) await lockScreen();
   render();
   if (!isStandalone() && !state.kv.guideDismissed) showGuide();
