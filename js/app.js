@@ -5,9 +5,10 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.4.2';
+export const APP_VERSION = '1.5.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
-const MANUAL_ONLY = true;
+// (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
+const MANUAL_ONLY = false;
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
