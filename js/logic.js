@@ -253,6 +253,18 @@ function applyFooter(p, categories) {
       if (extra > 0 && near(p.sum + extra, p.total)) { it.amount += extra; p.sum += extra; it.plusFixed = true; break; }
     }
   }
+  // (v1.7.1, Ahmad: "25jd (debt to abood)" = money he LENT, not spent; his Total already left it out) when the day's Total only
+  // matches without the debt / loan lines, those are set aside (not expenses), like the "Plus" income lines
+  if (p.total != null && !near(p.total, p.sum)) {
+    const isLoan = it => /(?:^|[^a-z])(debt|loan|lent|borrow[a-z]*)(?![a-z])|دين|سلف|قرض|ديّن|تديّن/i.test(it.text);
+    const loans = p.items.filter(isLoan);
+    const loanSum = loans.reduce((a, it) => a + it.amount, 0);
+    if (loans.length && near(p.sum - loanSum, p.total)) {
+      p.items = p.items.filter(it => !isLoan(it));
+      p.sum -= loanSum;
+      p.warnings = [`سطور دين/سلفة (مش مصروف) ما سجلتها: ${loans.map(it => `${jd(it.amount)} ${it.text}`).join(' / ')}`, ...p.warnings];
+    }
+  }
   const isSadaqa = it => categories.find(c => c.id === it.cat)?.kind === 'sadaqa';
   p.rafahMatched = null;
   if (p.rafahTotal != null && p.items.length) {
