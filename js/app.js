@@ -3,8 +3,9 @@ import { uid, toFils, jd, jdShort, today, thisMonth, addMonths, monthLabel, dayL
 import * as L from './logic.js';
 import * as C from './claude.js';
 import * as SMS from './sms.js';
+import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
@@ -104,7 +105,8 @@ function render() {
   AFTER[v]?.();
 }
 const SUB = ['settings', 'sms'];
-function go(v) { if (SUB.includes(v) && !SUB.includes(ui.view)) ui.prevView = ui.view; ui.view = v; render(); window.scrollTo(0, 0); }
+function go(v) {
+  if (v === 'sms' && !ui.sms) openReview(); if (SUB.includes(v) && !SUB.includes(ui.view)) ui.prevView = ui.view; ui.view = v; render(); window.scrollTo(0, 0); }
 
 /** Backup reminder level: never exported = yellow, red once there's been data for 3+ days; exported = ok, yellow after 7 days. */
 function backupStatus() {
@@ -158,7 +160,7 @@ VIEWS.add = () => {
     <label class="field toggle" style="margin-top:28px"><span>رفاهية</span><input id="qaRafah" type="checkbox" ${q.rafah ? 'checked' : ''} ${cat?.kind === 'sadaqa' ? 'disabled' : ''}></label></div>
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
-  <button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك</button>
+  <button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك${reviewCount() ? ` <span class="pill warn" id="reviewBadge">${reviewCount()} بدها مراجعة</span>` : ''}</button>${inboxOn() ? `<div class="sub" style="text-align:center" id="homeLastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}</div>` : ''}
   <details class="card" id="pasteBox" ${ui.parsed ? 'open' : ''}>
     <summary>📋 الصق ملاحظة اليوم</summary>
     <textarea id="noteText" placeholder="November 13&#10;20jd groceries&#10;13.15 gasoline&#10;Total 33.15 JD // Rafaheyah 0 JD" dir="auto">${esc(ui.noteText || '')}</textarea>
@@ -483,10 +485,18 @@ function defaultAction(it) {
   return 'expense';
 }
 
+function prepItem(it) {
+  it.action = it.action || defaultAction(it);
+  it.include = it.include ?? (!it.mergedInto && !(it.kind === 'unknown' && !it.amount));
+  it.date = it.date || today();
+  if (it.note == null) it.note = it.kind === 'bill' ? it.biller : it.kind === 'card_debit' || it.kind === 'card_credit' ? it.merchant : it.kind === 'deposit' ? it.source : it.kind === 'cliq' ? 'كليك' : it.kind === 'atm' ? 'سحب نقدي' : '';
+  if (!it.cat) it.cat = 'other';
+  return it;
+}
 function smsParse(text) {
   const r = SMS.parseBatch(text, state.kv.categories, smsSeen());
   crossMerge(r.items);
-  for (const it of r.items) { it.action = defaultAction(it); it.include = !it.mergedInto && !(it.kind === 'unknown' && !it.amount); it.date = it.date || today(); it.note = it.kind === 'bill' ? it.biller : it.kind === 'card_debit' || it.kind === 'card_credit' ? it.merchant : it.kind === 'deposit' ? it.source : it.kind === 'cliq' ? 'كليك' : it.kind === 'atm' ? 'سحب نقدي' : ''; if (!it.cat) it.cat = 'other'; }
+  r.items.forEach(prepItem);
   ui.sms = r;
 }
 
@@ -496,7 +506,7 @@ function smsItemHtml(it, i) {
   const showAcc = ['bill', 'card_debit'].includes(it.kind) || (it.kind === 'unknown' && it.action === 'expense');
   const openObl = state.obligations.filter(o => !o.done);
   return `<div class="card smsitem ${merged ? 'merged' : ''}" data-i="${i}">
-    <div class="row" style="justify-content:space-between"><b>${KIND_LABEL[it.kind]}</b>${merged ? '' : `<label class="toggle" style="flex:none;min-height:36px;gap:6px"><span class="sub">سجّل</span><input type="checkbox" class="sInc" ${it.include ? 'checked' : ''}></label>`}</div>
+    <div class="row" style="justify-content:space-between"><b>${KIND_LABEL[it.kind]}${it.flag ? ` <span class="pill warn">${esc(it.flag)}</span>` : ''}</b>${merged ? '' : `<label class="toggle" style="flex:none;min-height:36px;gap:6px"><span class="sub">سجّل</span><input type="checkbox" class="sInc" ${it.include ? 'checked' : ''}></label>`}</div>
     <div class="sub smsraw" dir="auto">${esc(it.raw)}</div>
     ${merged ? `<div class="banner blue">🔗 هاي رسالة البطاقة تبعت فاتورة، اندمجت معها كمصروف واحد (ما رح تنخصم مرتين).</div>` : `
     ${it.kind === 'bill' ? `<div class="sub">${esc(it.biller)}: ${jd(it.billAmount)} + عمولة ${jd(it.fee)} = <b class="amt">${jd(it.amount)}</b>${it.cardMatched ? ' · <span class="pill good">انطابقت مع رسالة البطاقة</span>' : ' · <span class="pill warn">ما لقيت رسالة البطاقة، اختار الحساب</span>'}</div>` : ''}
@@ -526,26 +536,28 @@ function smsBalancesPreview(r) {
 
 VIEWS.sms = () => {
   const r = ui.sms;
-  return `<details class="card" id="smsHelp" ${ui.smsHelp ? 'open' : ''}><summary>❓ كيف أخلي الرسائل توصل لحالها؟ (اختصارات آيفون)</summary>
+  const top = inboxOn() ? `<div class="card"><div class="row"><div class="sub" id="lastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}${inboxCfg().lastError ? ` · <span class="bad">${esc(inboxCfg().lastError)}</span>` : ''}</div><button class="btn sm" data-act="pullNow" style="flex:none">اسحب هلأ</button></div>${(state.kv.inboxPending || []).length ? `<div class="sub">⏳ ${(state.kv.inboxPending || []).length} بستنّى رسالتها التانية (فاتورة/بطاقة)</div>` : ''}</div>`
+    : `<div class="banner blue">📥 بدك الرسائل تنسجل لحالها؟ حط توكن "صندوق الرسائل التلقائي" بالإعدادات. <button class="btn sm" data-act="go" data-v="settings" style="display:inline-flex;margin-top:6px">الإعدادات</button></div>`;
+  const tools = `<details class="card" id="smsHelp" ${ui.smsHelp ? 'open' : ''}><summary>❓ كيف أوصّل الرسائل؟</summary>
+    <p><b>تلقائي (الأحسن):</b> أتمتة بالاختصارات بتبعت كل رسالة للصندوق الخاص فيك على GitHub، والتطبيق بسحبها لما تفتحه. الخطوات بالتفصيل بالـ README.</p>
+    <p><b>بملف:</b></p>
     <ol class="steps">
-      <li>افتح تطبيق <b>الاختصارات (Shortcuts)</b> ← تبويب <b>الأتمتة (Automation)</b> تحت.</li>
-      <li>اضغط <b>+</b> ← اختار <b>الرسالة (Message)</b>.</li>
-      <li>عند <b>المرسل (Sender)</b> اختار <span class="amt">HousingBank</span> (بعدين اعمل أتمتة تانية لـ <span class="amt">Iskan CrCrd</span>).</li>
-      <li>اختار <b>تشغيل فوري (Run Immediately)</b> ← التالي.</li>
-      <li>ضيف إجراء <b>إلحاق بملف نصي (Append to Text File)</b>.</li>
-      <li>بالنص حط: متغير <b>الرسالة (Shortcut Input / Message)</b>، بعدها سطر جديد، وبعدها <span class="amt">----</span></li>
-      <li>الملف: <span class="amt">iCloud Drive/Shortcuts/masroofi_sms.txt</span> وفعّل "إنشاء إذا مش موجود".</li>
-      <li>كل كم يوم: افتح مصروفي ← رسائل البنك ← <b>استورد ملف الرسائل</b> واختار الملف.</li>
+      <li>الاختصارات (Shortcuts) ← الأتمتة (Automation) ← <b>+</b> ← الرسالة (Message).</li>
+      <li>المرسل (Sender): <span class="amt">HousingBank</span> (وأتمتة تانية لـ <span class="amt">Iskan CrCrd</span>) ← تشغيل فوري (Run Immediately).</li>
+      <li>إجراء <b>إلحاق بملف نصي (Append to Text File)</b>: الرسالة + سطر جديد + <span class="amt">----</span></li>
+      <li>الملف: <span class="amt">iCloud Drive/Shortcuts/masroofi_sms.txt</span></li>
+      <li>بعدين: رسائل البنك ← <b>استورد ملف الرسائل</b>.</li>
     </ol>
-    <div class="sub">الرسائل اللي انستوردت قبل ما بتنعاد حتى لو ضلت بالملف. مصاريف الكاش سجّلها بإيدك من "سجّل" واختار كاش، البنك ما بيعرف عنها.</div>
+    <div class="sub">الرسائل اللي انستوردت ما بتنعاد. مصاريف الكاش سجّلها بإيدك من "سجّل" واختار كاش، البنك ما بيعرف عنها.</div>
   </details>
   <div class="card">
     <textarea id="smsText" dir="auto" placeholder="الصق رسالة أو أكثر من البنك هون">${esc(ui.smsText || '')}</textarea>
     <div class="btns"><button class="btn pri" data-act="smsParse">حلّل</button><label class="btn" style="cursor:pointer">📂 استورد ملف الرسائل<input id="smsFile" type="file" accept=".txt,text/plain" hidden></label></div>
-  </div>
-  ${r ? `${r.dups ? `<div class="banner blue" id="smsDups">↩️ ${r.dups} ${r.dups === 1 ? 'رسالة' : 'رسائل'} انستوردت قبل، تجاهلتها.</div>` : ''}
-    ${r.items.length ? `${smsBalancesPreview(r)}<div id="smsList">${r.items.map(smsItemHtml).join('')}</div><button class="btn pri" data-act="smsApply" id="smsApplyBtn">سجّل المختار</button>` : '<div class="banner yellow">ما في رسائل جديدة.</div>'}` : ''}
-  ${ui.smsDone ? `<div class="banner blue" id="smsDone">${ui.smsDone}</div>` : ''}`;
+  </div>`;
+  const results = r ? `${r.review ? `<h2 id="reviewHead">🔎 بدها مراجعة (${r.items.length})</h2>` : ''}${r.dups ? `<div class="banner blue" id="smsDups">↩️ ${r.dups} ${r.dups === 1 ? 'رسالة' : 'رسائل'} انستوردت قبل، تجاهلتها.</div>` : ''}
+    ${r.items.length ? `${r.review ? '' : smsBalancesPreview(r)}<div id="smsList">${r.items.map(smsItemHtml).join('')}</div><button class="btn pri" data-act="smsApply" id="smsApplyBtn">سجّل المختار</button>` : '<div class="banner yellow">ما في رسائل جديدة.</div>'}` : '';
+  const done = ui.smsDone ? `<div class="banner blue" id="smsDone">${ui.smsDone}</div>` : '';
+  return r?.review ? top + done + results + tools : top + tools + results + done;
 };
 AFTER.sms = () => {
   $('#smsText').addEventListener('input', e => { ui.smsText = e.target.value; });
@@ -573,6 +585,53 @@ function readSmsEdits() {
   });
 }
 
+/** Save one reviewed/auto item. Records get the pull time as ts so a balance taken from the same SMS never counts them twice. */
+async function saveSmsItem(it) {
+  const ts = it.pulledAt || Date.now();
+  if (it.mergedInto) {
+    if (it.mergedEntry) { const e = state.entries.find(x => x.id === it.mergedEntry); if (e) await saveRec('entries', { ...e, smsCard: it.hash }); }
+    return false;
+  }
+  if (!it.include || it.action === 'skip') return false;
+  const marks = { sms: it.hash, smsKind: it.kind, ts };
+  if (it.kind === 'bill') {
+    marks.smsCard = it.cardHash || null;
+    if (it.updateEntry) { const e = state.entries.find(x => x.id === it.updateEntry); if (e) { await saveRec('entries', { ...e, cat: it.cat, sub: it.sub, note: it.note, smsBill: it.hash }); return true; } }
+    await addEntry({ amount: it.amount, cat: it.cat, sub: it.sub, note: it.note, from: it.account, date: it.date, extra: marks }); return true;
+  }
+  if (it.kind === 'card_debit' || (it.kind === 'unknown' && it.action === 'expense') || (it.kind === 'cliq' && it.action === 'expense')) {
+    if (it.kind === 'card_debit' && it.viaHousing) marks.smsHousing = true;
+    await addEntry({ amount: it.amount, cat: it.cat, sub: it.sub || '', note: it.note, from: it.kind === 'cliq' ? 'savings' : it.account, date: it.date, extra: marks }); return true;
+  }
+  if (it.kind === 'cliq' && it.action === 'debt') {
+    const o = state.obligations.find(x => x.id === it.obl);
+    if (o) { const { upd, next } = L.payObligation(o, 'savings', it.amount, ts); await saveRec('obligations', upd); if (next) await saveRec('obligations', next); return true; }
+    return false;
+  }
+  if (it.kind === 'deposit' && it.action === 'income') {
+    await saveRec('incomes', { id: uid(), ts, source: it.note || 'إيداع', amount: it.amount, date: it.date, status: 'received', recur: 'none', months: [], sure: true, account: 'savings', receivedAmount: it.amount, receivedTs: ts, receivedDate: it.date, sms: it.hash }); return true;
+  }
+  const tr = (from, to, note) => saveRec('transfers', { id: uid(), ts, date: it.date, from, to, amount: it.amount, note, sms: it.hash });
+  if (it.kind === 'deposit' && it.action === 'transfer') { await tr('cash', 'savings', 'إيداع كاش'); return true; }
+  if (it.kind === 'atm') { await tr('savings', 'cash', 'سحب نقدي'); return true; }
+  if (it.kind === 'card_credit' && it.action === 'transfer') { await tr('savings', 'card', 'سداد البطاقة'); return true; }
+  return it.kind === 'cliq' && it.action === 'out';
+}
+
+/** The bank's real numbers replace the estimates. Returns messages. */
+async function applyBalances(items) {
+  const msgs = [];
+  const accs = structuredClone(state.kv.accounts);
+  const at = Date.now() + 1;
+  const sv = items.filter(i => i.balance != null).sort((a, b) => (a.at || 0) - (b.at || 0)).pop();
+  if (sv && !(accs.savings.smsAt && sv.at && sv.at < accs.savings.smsAt)) { accs.savings.base = sv.balance; accs.savings.baseTs = at; accs.savings.smsAt = sv.at || null; msgs.push(`التوفير صار ${jd(sv.balance)}`); }
+  const cd = [...items].reverse().find(i => i.available != null);
+  if (cd && accs.card.limit) { accs.card.base = Math.max(0, accs.card.limit - cd.available); accs.card.baseTs = at; msgs.push(`المطلوب على البطاقة ${jd(accs.card.base)}`); }
+  else if (cd) msgs.push('حط حد البطاقة عشان أحدّث المطلوب عليها');
+  await setKV('accounts', accs);
+  return msgs;
+}
+
 async function smsApply() {
   readSmsEdits();
   const r = ui.sms; if (!r) return;
@@ -581,52 +640,113 @@ async function smsApply() {
   const limIn = $('#smsLimit');
   if (limIn && limIn.value.trim()) { const lim = toFils(limIn.value); if (lim > 0) await setKV('accounts', { ...state.kv.accounts, card: { ...state.kv.accounts.card, limit: lim } }); }
   let n = 0;
-  for (const it of r.items) {
-    if (it.mergedInto) {
-      if (it.mergedEntry) { const e = state.entries.find(x => x.id === it.mergedEntry); if (e) await saveRec('entries', { ...e, smsCard: it.hash }); }
-      continue;
-    }
-    if (!it.include || it.action === 'skip') continue;
-    const marks = { sms: it.hash, smsKind: it.kind };
-    if (it.kind === 'bill') {
-      marks.smsCard = it.cardHash || null;
-      if (it.updateEntry) { const e = state.entries.find(x => x.id === it.updateEntry); if (e) { await saveRec('entries', { ...e, cat: it.cat, sub: it.sub, note: it.note, smsBill: it.hash }); n++; continue; } }
-      await addEntry({ amount: it.amount, cat: it.cat, sub: it.sub, note: it.note, from: it.account, date: it.date, extra: marks }); n++;
-    } else if (it.kind === 'card_debit' || (it.kind === 'unknown' && it.action === 'expense') || (it.kind === 'cliq' && it.action === 'expense')) {
-      if (it.kind === 'card_debit' && it.viaHousing) marks.smsHousing = true;
-      await addEntry({ amount: it.amount, cat: it.cat, sub: it.sub || '', note: it.note, from: it.kind === 'cliq' ? 'savings' : it.account, date: it.date, extra: marks }); n++;
-    } else if (it.kind === 'cliq' && it.action === 'debt') {
-      const o = state.obligations.find(x => x.id === it.obl);
-      if (o) { const { upd, next } = L.payObligation(o, 'savings', it.amount); await saveRec('obligations', upd); if (next) await saveRec('obligations', next); n++; }
-    } else if (it.kind === 'deposit' && it.action === 'income') {
-      await saveRec('incomes', { id: uid(), ts: Date.now(), source: it.note || 'إيداع', amount: it.amount, date: it.date, status: 'received', recur: 'none', months: [], sure: true, account: 'savings', receivedAmount: it.amount, receivedTs: Date.now(), receivedDate: it.date, sms: it.hash }); n++;
-    } else if (it.kind === 'deposit' && it.action === 'transfer') {
-      await saveRec('transfers', { id: uid(), ts: Date.now(), date: it.date, from: 'cash', to: 'savings', amount: it.amount, note: 'إيداع كاش', sms: it.hash }); n++;
-    } else if (it.kind === 'atm') {
-      await saveRec('transfers', { id: uid(), ts: Date.now(), date: it.date, from: 'savings', to: 'cash', amount: it.amount, note: 'سحب نقدي', sms: it.hash }); n++;
-    } else if (it.kind === 'card_credit' && it.action === 'transfer') {
-      await saveRec('transfers', { id: uid(), ts: Date.now(), date: it.date, from: 'savings', to: 'card', amount: it.amount, note: 'سداد البطاقة', sms: it.hash }); n++;
-    } else if (it.kind === 'cliq' && it.action === 'out') n++;
-  }
-  // balances: the bank's real numbers replace the estimates (records above have older timestamps, so nothing counts twice)
-  const msgs = [];
-  if ($('#smsBal')?.checked !== false) {
-    const accs = structuredClone(state.kv.accounts);
-    const at = Date.now() + 1;
-    const sv = r.items.filter(i => i.balance != null).sort((a, b) => (a.at || 0) - (b.at || 0)).pop();
-    if (sv && !(accs.savings.smsAt && sv.at && sv.at < accs.savings.smsAt)) { accs.savings.base = sv.balance; accs.savings.baseTs = at; accs.savings.smsAt = sv.at || null; msgs.push(`التوفير صار ${jd(sv.balance)}`); }
-    const cd = [...r.items].reverse().find(i => i.available != null);
-    if (cd && accs.card.limit) { accs.card.base = Math.max(0, accs.card.limit - cd.available); accs.card.baseTs = at; msgs.push(`المطلوب على البطاقة ${jd(accs.card.base)}`); }
-    else if (cd) msgs.push('حط حد البطاقة عشان أحدّث المطلوب عليها');
-    await setKV('accounts', accs);
-  }
+  for (const it of r.items) if (await saveSmsItem(it)) n++;
+  // review items already updated the balances when they were pulled
+  const msgs = !r.review && $('#smsBal')?.checked !== false ? await applyBalances(r.items) : [];
   const seen = { ...smsSeen() };
   for (const it of r.items) { seen[it.hash] = Date.now(); if (it.refKey) seen[it.refKey] = Date.now(); }
   await setKV('smsSeen', seen);
+  if (r.review) { const done = new Set(r.items.map(i => i.hash)); await setKV('inboxReview', (state.kv.inboxReview || []).filter(i => !done.has(i.hash))); }
   ui.smsDone = `✓ انسجل ${n}. ${msgs.join('، ')}${ui.smsFromFile ? '<br>الرسائل اللي بالملف صارت محفوظة عندي، إذا استوردت نفس الملف مرة تانية ما رح تنعاد. فيك تفضّي الملف من تطبيق الملفات إذا بدك.' : ''}`;
   ui.sms = null; ui.smsText = ''; ui.smsFromFile = false;
   render(); toast(`انسجل ${n} ✓`);
 }
+
+// ----- Auto inbox (GitHub repo filled by the iOS Shortcut) -----
+const PENDING_MS = 30 * 60000;
+let pulling = false, lastAutoPull = 0;
+const inboxCfg = () => state.kv.inbox || {};
+const inboxOn = () => !!(inboxCfg().token && inboxCfg().repo);
+const reviewCount = () => (state.kv.inboxReview || []).length;
+function agoText(ts) {
+  if (!ts) return 'ولا مرة';
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return 'هلأ'; if (m < 60) return `قبل ${m} دقيقة`;
+  const h = Math.floor(m / 60); if (h < 24) return `قبل ${h} ساعة`;
+  return `قبل ${Math.floor(h / 24)} يوم`;
+}
+/** Sure enough to save without asking: card buys with a real category guess, ATM withdrawals. */
+const autoSafe = it => (it.kind === 'card_debit' && !it.viaHousing && it.cat && it.cat !== 'other') || it.kind === 'atm';
+
+async function pullInbox({ silent = false } = {}) {
+  if (!inboxOn() || pulling) return null;
+  if (!navigator.onLine) { if (!silent) toast('ما في نت'); return null; }
+  pulling = true;
+  const { token, repo } = inboxCfg();
+  const pullTs = Date.now();
+  const res = { saved: 0, review: 0, files: 0, deleted: 0 };
+  try {
+    // 1) read everything first (no side effects yet)
+    const files = await IN.listInbox(token, repo);
+    const got = [];
+    for (const f of files) got.push({ path: f.path, ...(await IN.readFile(token, repo, f.path)) });
+    res.files = got.length;
+    // 2) parse + dedupe by content hash (a file whose delete failed last time is skipped here)
+    const seen = { ...smsSeen() };
+    const fresh = [];
+    for (const g of got) for (const raw of SMS.splitMessages(g.text)) {
+      const it = SMS.parseSms(raw, state.kv.categories);
+      const refKey = it.ref ? `ref:${it.ref}:${it.amount}` : null;
+      if (seen[it.hash] || (refKey && seen[refKey])) continue;
+      seen[it.hash] = pullTs; if (refKey) seen[refKey] = pullTs;
+      Object.assign(it, { refKey, pulledAt: pullTs, date: it.date || today() });
+      fresh.push(it);
+    }
+    // 3) pair bills with "Housing Bank" card SMS across pulls (pending buffer), then save or queue
+    const pool = [...(state.kv.inboxPending || []).map(i => ({ ...i, mergedInto: null, cardMatched: false })), ...fresh];
+    SMS.mergeBillCard(pool); crossMerge(pool);
+    const review = [...(state.kv.inboxReview || [])], pending = [];
+    for (const it of pool) {
+      prepItem(it);
+      if (it.mergedInto) { await saveSmsItem(it); continue; }
+      if (it.kind === 'bill' && it.cardMatched) {
+        const card = pool.find(c => c.mergedInto === it.hash);
+        if (card) it.pulledAt = Math.min(it.pulledAt, card.pulledAt);
+        if (await saveSmsItem(it)) res.saved++;
+        continue;
+      }
+      if (it.kind === 'bill' || (it.kind === 'card_debit' && it.viaHousing)) {
+        if (pullTs - it.pulledAt < PENDING_MS) { pending.push(it); continue; }
+        it.flag = it.kind === 'bill' ? 'ما وصلت رسالة البطاقة' : 'ما وصلت رسالة الفاتورة';
+        review.push(it); res.review++; continue;
+      }
+      if (autoSafe(it)) { if (await saveSmsItem(it)) res.saved++; continue; }
+      if (it.kind === 'card_debit' || it.kind === 'unknown') { it.cat = 'other'; it.flag = it.kind === 'unknown' ? 'رسالة مش معروفة' : 'تاجر مش معروف'; }
+      review.push(it); res.review++;
+    }
+    await setKV('smsSeen', seen);
+    await setKV('inboxPending', pending);
+    await setKV('inboxReview', review);
+    if (fresh.length) await applyBalances(fresh);
+    // 4) only now delete the files (a failed delete is harmless: the hashes are remembered)
+    for (const g of got) { try { if (await IN.deleteFile(token, repo, g.path, g.sha)) res.deleted++; } catch {} }
+    await setKV('inbox', { ...inboxCfg(), lastPull: Date.now(), lastError: '' });
+    if (res.saved || res.review) toast(`انسجلت ${res.saved} ${res.saved === 1 ? 'مصروف' : 'مصاريف'} تلقائياً${res.review ? ` · ${res.review} بدها مراجعة` : ''}`);
+    else if (!silent) toast('ما في رسائل جديدة');
+  } catch (err) {
+    await setKV('inbox', { ...inboxCfg(), lastError: String(err.message || err) });
+    if (!silent) toast(`ما زبط السحب: ${err.message || err}`);
+    res.error = String(err.message || err);
+  } finally {
+    pulling = false;
+    if (['add', 'sms', 'settings', 'day', 'month', 'money'].includes(ui.view) && !$('#sheet').innerHTML) {
+      if (ui.view === 'sms') { if (ui.sms && !ui.sms.review) readSmsEdits(); if (!ui.sms) openReview(); }
+      render();
+    }
+  }
+  return res;
+}
+function openReview() {
+  const q = state.kv.inboxReview || [];
+  if (q.length && !ui.sms) ui.sms = { items: q.map(i => prepItem({ ...i })), dups: 0, review: true };
+}
+function autoPull() {
+  if (!inboxOn() || document.visibilityState !== 'visible' || Date.now() - lastAutoPull < 30000) return;
+  lastAutoPull = Date.now();
+  pullInbox({ silent: true });
+}
+document.addEventListener('visibilitychange', autoPull);
+window.addEventListener('focus', autoPull);
 
 // ----- Settings -----
 VIEWS.settings = () => {
@@ -662,11 +782,16 @@ VIEWS.settings = () => {
       <input type="text" class="cSubs" value="${esc((c.subs || []).join('، '))}" placeholder="تفاصيل مفصولة بفاصلة (اختياري)"></div></div>`).join('')}</div>
     <div class="btns"><button class="btn" data-act="catAdd">➕ تصنيف</button><button class="btn pri" data-act="catSave">احفظ التصنيفات</button></div></div>
 
-  <h2>📩 رسائل البنك</h2><div class="card"><button class="btn" data-act="go" data-v="sms">استورد رسائل البنك</button></div>
+  <h2>📥 صندوق الرسائل التلقائي</h2><div class="card">
+    <label class="field"><span>توكن GitHub ${inboxCfg().token ? '<span class="pill good">محفوظ</span>' : ''}</span><input id="inboxToken" type="password" dir="ltr" autocomplete="off" placeholder="${inboxCfg().token ? '•••••• (محفوظ)' : 'github_pat_...'}"></label>
+    <label class="field"><span>الريبو</span><input id="inboxRepo" type="text" dir="ltr" value="${esc(inboxCfg().repo || 'hamootax-ai/masroofi-inbox')}"></label>
+    <div class="btns"><button class="btn pri" data-act="saveInbox">احفظ</button>${inboxCfg().token ? '<button class="btn" data-act="pullNow">اسحب هلأ</button><button class="btn danger" data-act="delInbox">امسح</button>' : ''}</div>
+    <div class="sub">آخر سحب: ${agoText(inboxCfg().lastPull)}${inboxCfg().lastError ? ` · <span class="bad">${esc(inboxCfg().lastError)}</span>` : ''}. التوكن بضل بالتلفون بس، وما بنحط بالنسخة الاحتياطية إلا إذا اخترت.</div>
+    <button class="btn ghost" data-act="go" data-v="sms" style="margin-top:8px">📩 رسائل البنك</button></div>
 
   <h2>💾 نسخة احتياطية</h2><div class="card">
     <div class="sub">آخر نسخة: ${state.kv.lastBackup ? dayLabel(ymd(new Date(state.kv.lastBackup))) : 'ولا مرة'}</div>
-    <label class="toggle"><span>ضمّن مفتاح API بالملف</span><input id="incKey" type="checkbox"></label>
+    <label class="toggle"><span>ضمّن المفاتيح (Claude + توكن الصندوق) بالملف</span><input id="incKey" type="checkbox"></label>
     <div class="btns"><button class="btn pri" data-act="export">⬆️ صدّر</button><label class="btn" style="cursor:pointer">⬇️ استرجع<input id="importIn" type="file" accept="application/json,.json" hidden></label></div>
     <div class="sub">احفظ الملف بـ Files ← iCloud Drive.</div></div>
 
@@ -700,7 +825,7 @@ function readCatEdits() {
 async function exportData() {
   const includeKey = $('#incKey')?.checked;
   const kv = { ...state.kv, lastBackup: Date.now() };
-  if (!includeKey) delete kv.apiKey;
+  if (!includeKey) { delete kv.apiKey; if (kv.inbox) kv.inbox = { ...kv.inbox, token: undefined }; }
   const data = { app: 'masroofi', version: 1, exportedAt: new Date().toISOString(), entries: state.entries, transfers: state.transfers, incomes: state.incomes, obligations: state.obligations, chat: state.chat, kv };
   const name = `masroofi-backup-${today()}.json`;
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
@@ -793,6 +918,15 @@ const ACT = {
   go: el => go(el.dataset.v),
   smsParse: () => { ui.smsText = $('#smsText').value; ui.smsDone = ''; smsParse(ui.smsText); ui.smsFromFile = false; render(); },
   smsApply: () => smsApply(),
+  pullNow: () => pullInbox(),
+  saveInbox: async () => {
+    const tok = $('#inboxToken').value.trim(), repo = $('#inboxRepo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, '');
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return toast('اسم الريبو لازم يكون owner/name');
+    if (!tok && !inboxCfg().token) return toast('الصق التوكن');
+    await setKV('inbox', { ...inboxCfg(), repo, ...(tok ? { token: tok } : {}) });
+    render(); toast('انحفظ ✓'); pullInbox();
+  },
+  delInbox: async () => { if (!confirm('نمسح توكن الصندوق؟')) return; await setKV('inbox', { repo: inboxCfg().repo }); render(); },
   back: () => go(ui.prevView && !SUB.includes(ui.prevView) ? ui.prevView : 'add'),
   toggleDeep: el => { ui.deep = !ui.deep; el.classList.toggle('on', ui.deep); el.setAttribute('aria-pressed', ui.deep); },
   seg: el => {
@@ -1079,6 +1213,7 @@ async function boot() {
   if (state.kv.pinHash) await lockScreen();
   render();
   if (!isStandalone() && !state.kv.guideDismissed) showGuide();
+  autoPull();
   try { if (navigator.storage?.persist) ui.persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist()); } catch {}
   if ('serviceWorker' in navigator) {
     const hadController = !!navigator.serviceWorker.controller;
@@ -1087,5 +1222,5 @@ async function boot() {
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
   }
 }
-window.__masroofi = { state, ui, L, C, render, go, sendChat }; // debugging/tests
+window.__masroofi = { state, ui, L, C, render, go, sendChat, pullInbox }; // debugging/tests
 boot();

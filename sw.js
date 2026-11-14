@@ -1,9 +1,9 @@
 // Service worker: precache everything, serve from cache (works offline),
 // refresh the cache in the background so the next reload gets the new files.
-const VERSION = 'masroofi-v1.2.0';
+const VERSION = 'masroofi-v1.3.0';
 const ASSETS = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
-  'js/app.js', 'js/db.js', 'js/util.js', 'js/logic.js', 'js/claude.js', 'js/sms.js',
+  'js/app.js', 'js/db.js', 'js/util.js', 'js/logic.js', 'js/claude.js', 'js/sms.js', 'js/inbox.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 

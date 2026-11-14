@@ -55,11 +55,13 @@ export async function replaceAll(data) {
     const kv = t.objectStore('kv');
     const keepKey = data.__keepKey; // keep existing API key if the backup has none
     const oldKeyReq = kv.get('apiKey');
-    oldKeyReq.onsuccess = () => {
-      const oldKey = oldKeyReq.result;
+    const oldInboxReq = kv.get('inbox');
+    oldInboxReq.onsuccess = () => {
+      const oldKey = oldKeyReq.result, oldInbox = oldInboxReq.result;
       kv.clear();
       for (const [k, v] of Object.entries(data.kv || {})) kv.put(v, k);
       if (keepKey && oldKey && !(data.kv && data.kv.apiKey)) kv.put(oldKey, 'apiKey');
+      if (keepKey && oldInbox?.token && !(data.kv && data.kv.inbox && data.kv.inbox.token)) kv.put({ ...(data.kv?.inbox || {}), ...oldInbox, token: oldInbox.token }, 'inbox');
     };
     t.oncomplete = res;
     t.onerror = () => rej(t.error);

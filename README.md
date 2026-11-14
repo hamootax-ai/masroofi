@@ -46,3 +46,18 @@ HTML/CSS/JS بدون مكتبات ولا build. Service worker بيخزن كل �
 - رصيد التوفير بيتحدث من "الرصيد المتوفر"، والمطلوب على البطاقة = الحد − "Available balance".
 - الرسائل اللي انستوردت ما بتنعاد. مصاريف الكاش سجّلها بإيدك.
 - الأتمتة: الاختصارات ← الأتمتة ← + ← الرسالة ← المرسل HousingBank (وكمان Iskan CrCrd) ← تشغيل فوري ← إلحاق بملف نصي: الرسالة + سطر جديد + `----` بالملف `iCloud Drive/Shortcuts/masroofi_sms.txt`.
+
+## صندوق الرسائل التلقائي (v1.3)
+كل رسالة من البنك بتنبعت لريبو خاص (private) على GitHub، والتطبيق بسحبها لما تفتحه (أو "اسحب هلأ")، بسجّل المؤكد لحاله، وبحط الباقي بـ "بدها مراجعة"، وبعدين بمسح الملف من الريبو.
+
+**التوكن (مرة وحدة):** github.com ← صورتك ← Settings ← Developer settings ← Personal access tokens ← Fine-grained tokens ← Generate new token ← Expiration سنة ← Repository access: Only select repositories ← `masroofi-inbox` ← Repository permissions ← Contents: Read and write ← Generate ← انسخه. بالتطبيق: الإعدادات ← صندوق الرسائل التلقائي ← الصقه ← احفظ. التوكن بضل على التلفون بس.
+
+**الأتمتة (iOS 18):** الاختصارات ← Automation ← + ← Message ← Sender: `HousingBank` ← Run Immediately (وطفّي Notify When Run) ← New Blank Automation، وبعدين الإجراءات:
+1. Text ← Shortcut Input (Content).
+2. Base64 Encode ← Line Breaks: None.
+3. Format Date ← Current Date ← Custom: `yyyyMMdd-HHmmss-SSS`.
+4. Get Contents of URL ← `https://api.github.com/repos/hamootax-ai/masroofi-inbox/contents/inbox/` + Formatted Date + `.txt` ← Method: PUT ← Headers: `Authorization` = `Bearer التوكن`، `Accept` = `application/vnd.github+json` ← Request Body: JSON: `message` = `sms`، `content` = Base64 Encoded.
+
+وأتمتة تانية نفسها للمرسل `Iskan CrCrd`.
+
+**شو بنسجل لحاله:** مشتريات البطاقة اللي تاجرها معروف، السحب النقدي، والفاتورة + رسالة البطاقة تبعتها (حتى لو وصلوا بسحبتين، بستنى لحد 30 دقيقة). **بدها مراجعة:** تحويلات كليك، الإيداعات، تجار مش معروفين (أخرى)، ورسائل مش مفهومة. الأرصدة بتتحدث من الرسائل فوراً. إذا فشل المسح، الرسالة ما بتنحسب مرتين.
