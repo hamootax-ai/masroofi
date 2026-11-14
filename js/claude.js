@@ -1,9 +1,12 @@
 // Claude API (user's own key, called straight from the phone). No key = the app still works.
-import { jd, today, monthLabel, ymd, parseYmd } from './util.js';
+import { jd, today, monthLabel, ymd, parseYmd, dayLabel, dateShort } from './util.js';
 import { monthStats, rafahStatus, balances, obligationsUntil, cardCycle, catName, S, ACCOUNTS } from './logic.js';
 
 export const MODELS = ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'];
-export const DEFAULT_PRICES = { 'claude-haiku-5-5': [1, 5], 'claude-sonnet-5-5': [3, 15], 'claude-opus-5-5': [5, 25] };
+export const DEEP_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5'];
+// $ per million tokens (input, output) — current list prices, editable in settings
+export const DEFAULT_PRICES = { 'claude-haiku-5-5': [0.1, 0.5], 'claude-sonnet-5-5': [2, 10], 'claude-opus-5-5': [4, 20] };
+export const OLD_DEFAULT_PRICES = { 'claude-haiku-5-5': [1, 5], 'claude-sonnet-5-5': [3, 15], 'claude-opus-5-5': [5, 25] };
 
 export const SYSTEM_PROMPT = `إنت مستشار مصاريف شخصي لصاحب هالتطبيق بالأردن، بتحكي أردني.
 
@@ -37,13 +40,13 @@ export function buildContext(state, ref = today()) {
   const cats = Object.entries(ms.byCat).sort((a, z) => z[1] - a[1]).map(([c, v]) => `${catName(state, c)} ${jd(v)}`).join('، ') || 'ولا شي';
   const todays = state.entries.filter(e => e.date === ref).map(e => `${jd(e.amount)} ${catName(state, e.cat)}${e.note ? ` (${e.note})` : ''}${e.rafah ? ' [رفاهية]' : ''} من ${ACCOUNTS[e.from]}`).join('، ');
   const lines = [
-    `[سياق تلقائي ${ref}]`,
+    `[سياق تلقائي: ${dayLabel(ref)}]`,
     `الشهر (${monthLabel(ym)}): المجموع ${jd(ms.total)}. حسب التصنيف: ${cats}.`,
     `مصاريف اليوم: ${todays || 'ولا شي لسا'}.`,
     `الرفاهية: ${jd(r.used)}/${jd(r.budget)} (ضايل ${jd(r.left)}).`,
-    `السيولة: توفير ${jd(b.savings)} + كاش ${jd(b.cash)} − البطاقة ${jd(b.card)} = ${jd(b.net)}. البطاقة: مستحق ${jd(cc.dueAmount)} يوم ${cc.dueDate}${b.cardLimit ? `، المتاح ${jd(b.cardAvail)}` : ''}.`,
-    `التزامات خلال 60 يوم: ${obl.list.map(o => `${o.title} ${jd(o.amount)} (${o.date})`).join('، ') || 'ولا شي'}${obl.noDate.length ? `. بدون تاريخ: ${obl.noDate.map(o => `${o.title} ${jd(o.amount)}`).join('، ')}` : ''}.`,
-    `دخل متوقع (مش محسوب بالسيولة لحد ما يوصل): ${inc.map(i => `${i.source} ${jd(i.amount)} ${i.date}${i.sure ? ' أكيد' : ' مش أكيد'}`).join('، ') || 'ولا شي'}.`,
+    `السيولة: توفير ${jd(b.savings)} + كاش ${jd(b.cash)} − البطاقة ${jd(b.card)} = ${jd(b.net)}. البطاقة: مستحق ${jd(cc.dueAmount)} يوم ${dateShort(cc.dueDate)}${b.cardLimit ? `، المتاح ${jd(b.cardAvail)}` : ''}.`,
+    `التزامات خلال 60 يوم: ${obl.list.map(o => `${o.title} ${jd(o.amount)} (${dateShort(o.date)})`).join('، ') || 'ولا شي'}${obl.noDate.length ? `. بدون تاريخ: ${obl.noDate.map(o => `${o.title} ${jd(o.amount)}`).join('، ')}` : ''}.`,
+    `دخل متوقع (مش محسوب بالسيولة لحد ما يوصل): ${inc.map(i => `${i.source} ${jd(i.amount)} ${dateShort(i.date)}${i.sure ? ' أكيد' : ' مش أكيد'}`).join('، ') || 'ولا شي'}.`,
     `التصنيفات: ${state.kv.categories.map(c => c.name).join('، ')}.`,
   ];
   const notes = S(state).notes?.trim();
@@ -79,9 +82,9 @@ export function currentModel(state) {
 }
 
 /** messages: [{role, content}] already trimmed. Returns {text, usage, model}. */
-export async function callClaude(apiKey, model, system, messages) {
-  const body = { model, max_tokens: 1024, system, messages };
-  if (MODELS.includes(model)) body.output_config = { effort: 'low' }; // short chat replies, keeps cost down
+export async function callClaude(apiKey, model, system, messages, deep = false) {
+  const body = { model, max_tokens: deep ? 2048 : 1024, system, messages };
+  if (MODELS.includes(model)) body.output_config = { effort: deep ? 'medium' : 'low' }; // short chat replies keep cost down; deep = think more
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {

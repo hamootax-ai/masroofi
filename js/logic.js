@@ -1,7 +1,8 @@
 // Pure business logic: balances, month stats, card cycle, projection, advice, note parsing.
-import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, uid } from './util.js';
+import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, uid, dateShort } from './util.js';
 
-export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير' };
+export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير', none: 'ما تخصم من الحسابات' };
+// 'none' = opening entry: counts in day/month/category/rafah totals but never touches an account.
 
 // kind drives the built-in rules (necessary / judged / never judged)
 export const DEFAULT_CATEGORIES = [
@@ -161,7 +162,7 @@ export const S = state => state.kv.settings;
 // ---------- Balances (base value + every effect recorded after the base was typed) ----------
 export function accountEvents(state) {
   const ev = []; // {acc, inflow (fils, + adds money / reduces card debt), ts}
-  for (const e of state.entries) ev.push({ acc: e.from, inflow: -e.amount, ts: e.ts });
+  for (const e of state.entries) if (e.from !== 'none') ev.push({ acc: e.from, inflow: -e.amount, ts: e.ts });
   for (const t of state.transfers) { ev.push({ acc: t.from, inflow: -t.amount, ts: t.ts }); ev.push({ acc: t.to, inflow: t.amount, ts: t.ts }); }
   for (const i of state.incomes) if (i.status === 'received' && i.account) ev.push({ acc: i.account, inflow: i.receivedAmount ?? i.amount, ts: i.receivedTs });
   for (const o of state.obligations) for (const p of o.payments || []) ev.push({ acc: p.account, inflow: -p.amount, ts: p.ts });
@@ -381,7 +382,7 @@ export function bigPurchaseCheck(state, amount, from = 'cash', ref = today()) {
   if (from === 'card' && amount > bal.cardAvail) verdict = { icon: '❌', text: `مش وقته: المتاح بالبطاقة ${jd(bal.cardAvail)} بس.` };
   if (from === 'cash' && amount > bal.cash) lines.push(`الكاش ما بكفي (${jd(bal.cash)}).`);
   if (from === 'savings' && amount > bal.savings) lines.push(`التوفير ما بكفي (${jd(bal.savings)}).`);
-  if (cc.dueAmount > 0 && cc.daysLeft <= 30) lines.push(`البطاقة مستحق عليها ${jd(cc.dueAmount)} يوم ${cc.dueDate} (محسوبة بالسيولة).`);
+  if (cc.dueAmount > 0 && cc.daysLeft <= 30) lines.push(`البطاقة مستحق عليها ${jd(cc.dueAmount)} يوم ${dateShort(cc.dueDate)} (محسوبة بالسيولة).`);
   lines.push('تذكير: الخصم مش سبب تشتري هلأ، وما في استدانة.');
   return { verdict, res, spend, liquidity: bal.net, lines };
 }

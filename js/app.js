@@ -1,15 +1,15 @@
 import * as db from './db.js';
-import { uid, toFils, jd, jdShort, today, thisMonth, addMonths, monthLabel, dayLabel, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS } from './util.js';
+import { uid, toFils, jd, jdShort, today, thisMonth, addMonths, monthLabel, dayLabel, dateShort, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS } from './util.js';
 import * as L from './logic.js';
 import * as C from './claude.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
 // ---------------- State ----------------
 const state = { entries: [], transfers: [], incomes: [], obligations: [], chat: [], kv: {} };
-const DEFAULT_SETTINGS = { rafahBudget: 60000, stmtDay: 20, dueDay: 4, model: 'claude-haiku-5-5', customModel: '', prices: structuredClone(C.DEFAULT_PRICES), capUsd: 5, notes: '', sortByUse: true };
+const DEFAULT_SETTINGS = { rafahBudget: 60000, stmtDay: 20, dueDay: 4, model: 'claude-haiku-5-5', customModel: '', deepModel: 'claude-opus-5-5', prices: structuredClone(C.DEFAULT_PRICES), pricesVersion: 2, capUsd: 5, notes: '', sortByUse: true };
 const ui = {
   view: 'add', dayDate: today(), monthYm: thisMonth(), moneySeg: 'acc', projDate: null,
   qa: null, parsed: null, pendingImg: null, sending: false, persisted: null,
@@ -24,8 +24,13 @@ async function load() {
   const kv = state.kv;
   if (!kv.categories) { kv.categories = structuredClone(L.DEFAULT_CATEGORIES); await db.kvSet('categories', kv.categories); }
   if (!kv.accounts) { kv.accounts = { savings: { base: 0, baseTs: 0 }, cash: { base: 0, baseTs: 0 }, card: { base: 0, baseTs: 0, limit: 0 } }; await db.kvSet('accounts', kv.accounts); }
+  const savedPricesVersion = kv.settings ? (kv.settings.pricesVersion || 1) : 2;
   kv.settings = { ...DEFAULT_SETTINGS, ...(kv.settings || {}) };
   kv.settings.prices = { ...C.DEFAULT_PRICES, ...(kv.settings.prices || {}) };
+  if (savedPricesVersion < 2) { // v1 shipped placeholder prices: move untouched ones to the list prices
+    for (const [m, old] of Object.entries(C.OLD_DEFAULT_PRICES)) { const cur = kv.settings.prices[m]; if (cur && cur[0] === old[0] && cur[1] === old[1]) kv.settings.prices[m] = [...C.DEFAULT_PRICES[m]]; }
+    kv.settings.pricesVersion = 2;
+  }
   await db.kvSet('settings', kv.settings);
   state.chat.sort((a, b) => a.ts - b.ts);
 }
@@ -63,13 +68,17 @@ async function copyText(text) {
   toast('انسخ ✓');
 }
 const amt = f => `<span class="amt">${jd(f)}</span>`;
-const fd = s => { if (!s) return ''; const d = parseYmd(s); return `<bdi>${d.getDate()} ${AR_MONTHS[d.getMonth()]}${d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : ''}</bdi>`; };
+const fd = s => s ? `<bdi>${dateShort(s)}</bdi>` : '';
+// Native date pickers stay (best on iPhone) but are invisible; the visible text is always our Arabic style.
+const dateField = (id, value, attrs = '', empty = 'بدون تاريخ') => `<label class="datebox"><span class="dlabel" data-empty="${empty}">${value ? dayLabel(value) : empty}</span><input id="${id}" type="date" value="${value || ''}" ${attrs}></label>`;
+const monthField = (id, ym) => `<label class="datebox"><span class="dlabel">${monthLabel(ym)}</span><input id="${id}" type="month" value="${ym}"></label>`;
+const CAL_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>';
 const iso = s => `⁦${s}⁩`;
 const accOptions = (sel, list = ['cash', 'card', 'savings']) => list.map(a => `<option value="${a}" ${a === sel ? 'selected' : ''}>${L.ACCOUNTS[a]}</option>`).join('');
 const catOptions = sel => state.kv.categories.map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.icon || '')} ${esc(c.name)}</option>`).join('');
-const fromSeg = (name, sel) => `<div class="seg" data-seg="${name}">${['cash', 'card', 'savings'].map(a => `<button type="button" data-act="seg" data-name="${name}" data-val="${a}" class="${a === sel ? 'on' : ''}">${L.ACCOUNTS[a]}</button>`).join('')}</div>`;
+const fromSeg = (name, sel, withNone = false) => `<div class="seg ${withNone ? 'wrap' : ''}" data-seg="${name}">${['cash', 'card', 'savings', ...(withNone ? ['none'] : [])].map(a => `<button type="button" data-act="seg" data-name="${name}" data-val="${a}" class="${a === sel ? 'on' : ''}">${L.ACCOUNTS[a]}</button>`).join('')}</div>${withNone ? `<div class="sub nonehint ${sel === 'none' ? '' : 'hidden'}">بينحسب بمجموع اليوم والشهر والرفاهية، بس ما بيغيّر أي رصيد. للمصاريف اللي صرفتها قبل ما تكتب أرصدتك الحقيقية.</div>` : ''}`;
 const isStandalone = () => window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
-const fmtUsd = n => '$' + (n || 0).toFixed(n < 0.1 ? 4 : 2);
+const fmtUsd = n => '$' + (n || 0).toFixed(!n ? 2 : n < 0.01 ? 5 : n < 0.1 ? 4 : 2);
 
 function sortedCats() {
   const cats = [...state.kv.categories].sort((a, b) => a.order - b.order);
@@ -86,31 +95,45 @@ const TITLES = { add: 'مصروفي', day: 'اليوم', month: 'الشهر', mo
 function render() {
   const v = ui.view;
   $('#title').textContent = TITLES[v];
+  const hb = $('#hdrBtn');
+  if (v === 'settings') { hb.dataset.act = 'back'; delete hb.dataset.v; hb.innerHTML = '→ رجوع'; hb.setAttribute('aria-label', 'رجوع'); hb.classList.add('back'); }
+  else { hb.dataset.act = 'go'; hb.dataset.v = 'settings'; hb.innerHTML = '⚙️'; hb.setAttribute('aria-label', 'الإعدادات'); hb.classList.remove('back'); }
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   $('#view').innerHTML = VIEWS[v]();
   AFTER[v]?.();
 }
-function go(v) { ui.view = v; render(); window.scrollTo(0, 0); }
+function go(v) { if (v === 'settings' && ui.view !== 'settings') ui.prevView = ui.view; ui.view = v; render(); window.scrollTo(0, 0); }
+
+/** Backup reminder level: never exported = yellow, red once there's been data for 3+ days; exported = ok, yellow after 7 days. */
+function backupStatus() {
+  const lb = state.kv.lastBackup;
+  const recs = [...state.entries, ...state.incomes, ...state.obligations, ...state.transfers];
+  const hasData = recs.length > 0;
+  if (!lb) {
+    const firstTs = hasData ? Math.min(...recs.map(r => r.ts || Date.now())) : Date.now();
+    return { hasData, level: hasData && Date.now() - firstTs > 3 * 86400000 ? 'red' : 'yellow', text: 'ولا مرة', remind: hasData };
+  }
+  const days = Math.floor((Date.now() - lb) / 86400000);
+  return { hasData, level: days > 7 ? 'yellow' : 'ok', text: days === 0 ? 'اليوم' : `قبل ${days} يوم`, remind: hasData && days > 7 };
+}
 
 function heroCard() {
   const b = L.balances(state);
   const cc = L.cardCycle(state);
-  const lb = state.kv.lastBackup;
-  const lbDays = lb ? Math.floor((Date.now() - lb) / 86400000) : null;
+  const bs = backupStatus();
   return `<div class="card hero">
     <div class="lbl">الصافي (توفير + كاش − البطاقة)</div>
     <div class="big amt ${b.net < 0 ? 'neg' : ''}" id="netBig">${jd(b.net)}</div>
     <div class="minirow"><span>توفير <b class="amt">${jd(b.savings)}</b></span><span>كاش <b class="amt">${jd(b.cash)}</b></span><span>بطاقة <b class="amt">${jd(b.card)}</b></span></div>
     <div class="minirow" style="margin-top:6px"><span>مستحق يوم ${parseYmd(cc.dueDate).getDate()}: <b class="amt">${jd(cc.dueAmount)}</b>${cc.closed ? '' : ' <span class="pill">تقريبي</span>'}</span>
-    <span>آخر نسخة احتياطية: <b>${lb ? (lbDays === 0 ? 'اليوم' : `قبل ${lbDays} يوم`) : 'ولا مرة'}</b></span></div>
+    <span>آخر نسخة احتياطية: <b id="backupAge" class="bk-${bs.level}">${bs.text}</b></span></div>
   </div>`;
 }
 
 function bannersHtml() {
   const list = [...L.adviceBanners(state)];
-  const lb = state.kv.lastBackup;
-  const hasData = state.entries.length + state.incomes.length + state.obligations.length > 0;
-  if (hasData && (!lb || Date.now() - lb > 7 * 86400000)) list.push({ level: 'blue', text: `💾 ${lb ? 'صارلك أكثر من أسبوع بدون نسخة احتياطية.' : 'ما عملت نسخة احتياطية لسا.'} <button class="btn sm" data-act="export" style="display:inline-flex;margin-top:6px">صدّر هلأ</button>` });
+  const bs = backupStatus();
+  if (bs.remind) list.push({ level: bs.level === 'red' ? 'red' : 'yellow', text: `💾 ${state.kv.lastBackup ? 'صارلك أكثر من أسبوع بدون نسخة احتياطية.' : 'ما عملت نسخة احتياطية لسا.'} <button class="btn sm" data-act="export" style="display:inline-flex;margin-top:6px">صدّر هلأ</button>` });
   if (!isStandalone()) list.unshift({ level: 'blue', text: '📲 إنت فاتح من المتصفح. البيانات هون منفصلة عن التطبيق المثبّت، افتح دايماً من أيقونة الشاشة الرئيسية. <a href="#" data-act="guide">كيف؟</a>' });
   return list.map(b => `<div class="banner ${b.level}">${b.text}</div>`).join('');
 }
@@ -128,8 +151,8 @@ VIEWS.add = () => {
     <div class="cats" id="qaCats">${sortedCats().map(c => `<button type="button" data-act="pickCat" data-id="${c.id}" class="${q.cat === c.id ? 'on' : ''}"><span class="ic">${esc(c.icon || '•')}</span>${esc(c.name)}</button>`).join('')}</div>
     ${cat?.subs?.length ? `<div class="chips">${cat.subs.map(s => `<button type="button" class="chip ${q.sub === s ? 'on' : ''}" data-act="pickSub" data-val="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
     <label class="field"><span>ملاحظة</span><input id="qaNote" type="text" value="${esc(q.note)}" placeholder="مثلاً groceries"></label>
-    <div class="field"><span>دفعت من</span>${fromSeg('qaFrom', q.from)}</div>
-    <div class="row"><label class="field"><span>التاريخ</span><input id="qaDate" type="date" value="${q.date}" max="${today()}"></label>
+    <div class="field"><span>دفعت من</span>${fromSeg('qaFrom', q.from, true)}</div>
+    <div class="row"><div class="field"><span>التاريخ</span>${dateField('qaDate', q.date, `max="${today()}"`)}</div>
     <label class="field toggle" style="margin-top:28px"><span>رفاهية</span><input id="qaRafah" type="checkbox" ${q.rafah ? 'checked' : ''} ${cat?.kind === 'sadaqa' ? 'disabled' : ''}></label></div>
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
@@ -154,8 +177,8 @@ function parsedHtml() {
   if (!p) return '';
   if (!p.items.length) return `<div class="banner yellow">ما لقيت بنود. الصيغة: <span class="amt">20jd groceries</span></div>`;
   return `${p.warnings.map(w => `<div class="banner yellow">⚠️ ${esc(w)}</div>`).join('')}
-  <label class="field"><span>التاريخ ${p.dateFound ? '' : '(ما لقيت تاريخ، حطيت اليوم)'}</span><input id="pDate" type="date" value="${p.date}"></label>
-  <div class="field"><span>دفعت من (للكل)</span>${fromSeg('pFrom', p.from || 'cash')}</div>
+  <div class="field"><span>التاريخ ${p.dateFound ? '' : '(ما لقيت تاريخ، حطيت اليوم)'}</span>${dateField('pDate', p.date)}</div>
+  <div class="field"><span>دفعت من (للكل)</span>${fromSeg('pFrom', p.from || 'cash', true)}</div>
   ${p.items.map((it, i) => `<div class="edit-row" data-i="${i}">
     <div class="row"><input type="text" inputmode="decimal" class="pAmt amt" value="${jd(it.amount)}" style="flex:.8"><select class="pCat">${catOptions(it.cat)}</select></div>
     <div class="row"><input type="text" class="pNote" value="${esc(it.text)}"><label class="toggle" style="flex:none;gap:6px"><span class="sub">رفاهية</span><input type="checkbox" class="pRafah" ${it.rafah ? 'checked' : ''}></label><button class="iconbtn" data-act="pDel" data-i="${i}" style="flex:none">🗑️</button></div>
@@ -191,8 +214,7 @@ VIEWS.day = () => {
   const dv = L.dayVerdict(state, d);
   const ms = L.monthStats(state, d.slice(0, 7));
   const r = L.rafahStatus(state, d.slice(0, 7));
-  return `<div class="navdate"><button class="iconbtn" data-act="dayShift" data-n="-1">→</button><input type="date" id="dayPick" value="${d}"><button class="iconbtn" data-act="dayShift" data-n="1">←</button></div>
-  <h2>${dayLabel(d)}</h2>
+  return `<div class="navdate"><button class="iconbtn" data-act="dayShift" data-n="-1">→</button>${dateField('dayPick', d)}<button class="iconbtn" data-act="dayShift" data-n="1">←</button></div>
   <div class="card">
     ${list.length ? `<ul class="list">${list.map(e => { const c = L.catById(state, e.cat); const v = L.entryVerdict(state, e); return `<li class="item">
       <div class="ic">${esc(c?.icon || '•')}</div>
@@ -216,8 +238,8 @@ function entrySheet(e) {
     <label class="field"><span>التصنيف</span><select id="eCat">${catOptions(e.cat)}</select></label>
     <label class="field"><span>تفصيل</span><select id="eSub"><option value="">—</option>${(c?.subs || []).map(s => `<option ${s === e.sub ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></label>
     <label class="field"><span>ملاحظة</span><input id="eNote" type="text" value="${esc(e.note)}"></label>
-    <label class="field"><span>دفعت من</span><select id="eFrom">${accOptions(e.from)}</select></label>
-    <label class="field"><span>التاريخ</span><input id="eDate" type="date" value="${e.date}"></label>
+    <label class="field"><span>دفعت من</span><select id="eFrom">${accOptions(e.from, ['cash', 'card', 'savings', 'none'])}</select></label>
+    <div class="field"><span>التاريخ</span>${dateField('eDate', e.date)}</div>
     <label class="field toggle"><span>رفاهية</span><input id="eRafah" type="checkbox" ${e.rafah ? 'checked' : ''}></label>
     <div class="btns"><button class="btn pri" id="eSave">احفظ</button><button class="btn ghost" id="eCancel">إلغاء</button></div>`, sh => {
     sh.querySelector('#eCat').onchange = ev => {
@@ -245,7 +267,7 @@ VIEWS.month = () => {
   const diff = ms.total - pm.total;
   const max = Math.max(1, ...Object.values(ms.byCat));
   const rows = Object.entries(ms.byCat).sort((a, b) => b[1] - a[1]);
-  return `<div class="navdate"><button class="iconbtn" data-act="monShift" data-n="-1">→</button><input type="month" id="monPick" value="${ym}"><button class="iconbtn" data-act="monShift" data-n="1">←</button></div>
+  return `<div class="navdate"><button class="iconbtn" data-act="monShift" data-n="-1">→</button>${monthField('monPick', ym)}<button class="iconbtn" data-act="monShift" data-n="1">←</button></div>
   <div class="card hero"><div class="lbl">${monthLabel(ym)}</div><div class="big amt" id="monTotal">${jd(ms.total)}</div>
     <div class="minirow"><span>الشهر اللي قبله <b class="amt">${jd(pm.total)}</b></span><span class="${!pm.total ? '' : diff > 0 ? 'bad' : 'good'}">${pm.total ? `${diff > 0 ? '▲' : '▼'} <span class="amt">${jd(Math.abs(diff))}</span> (${Math.round(Math.abs(diff) / pm.total * 100)}%)` : 'ما في مقارنة'}</span></div></div>
   <div class="card"><div class="catbar"><div class="hd"><span>🎉 الرفاهية</span><span class="amt">${jdShort(r.used)}/${jdShort(r.budget)}</span></div>
@@ -310,7 +332,7 @@ MONEY.obl = () => {
 MONEY.proj = () => {
   const X = ui.projDate || ymd(new Date(Date.now() + 30 * 86400000));
   const p = L.projection(state, X);
-  return `<div class="card"><label class="field"><span>لحد تاريخ</span><input id="projDate" type="date" value="${X}" min="${today()}"></label>
+  return `<div class="card"><div class="field"><span>لحد تاريخ</span>${dateField('projDate', X, `min="${today()}"`)}</div>
     <div class="grid2"><div class="card hero" style="margin:0"><div class="lbl">أسوأ حالة</div><div class="big amt ${p.worst < 0 ? 'neg' : ''}" id="projWorst" style="font-size:1.5rem">${jd(p.worst)}</div><div class="sub">بس الدخل الأكيد</div></div>
     <div class="card hero" style="margin:0"><div class="lbl">أحسن حالة</div><div class="big amt ${p.best < 0 ? 'neg' : ''}" id="projBest" style="font-size:1.5rem">${jd(p.best)}</div><div class="sub">كل الدخل المتوقع</div></div></div></div>
   <div class="card"><h2 style="margin-top:0">التفصيل (${p.days} يوم)</h2>
@@ -346,9 +368,10 @@ VIEWS.ask = () => {
   const cost = monthCost();
   const cap = settings().capUsd;
   return `${key ? '' : `<div class="banner blue" id="noKey">🔑 الدردشة بدها مفتاح Claude API خاص فيك. <br>1) ادخل console.anthropic.com ← API Keys واعمل مفتاح.<br>2) حطه بالإعدادات هون (بضل على تلفونك بس).<br>3) حط حد صرف شهري من Settings ← Limits.<br><button class="btn sm" data-act="go" data-v="settings" style="display:inline-flex;margin-top:8px">روح للإعدادات</button><br><span class="sub">باقي التطبيق شغّال كامل بدون مفتاح.</span></div>`}
-  <div class="row" style="margin-bottom:8px"><div class="sub">هالشهر: <span class="amt" id="costMonth">${fmtUsd(cost)}</span> من <span class="amt">${fmtUsd(cap)}</span> · ${esc(C.currentModel(state))}</div><button class="btn sm ghost" data-act="clearChat" style="flex:none">🧹 امسح</button></div>
+  <div class="row" style="margin-bottom:8px"><div class="sub">هالشهر: <span class="amt" id="costMonth">${fmtUsd(cost)}</span> من <span class="amt">${fmtUsd(cap)}</span> · <span class="amt nw">${esc(C.currentModel(state))}</span></div><button class="btn sm ghost" data-act="clearChat" style="flex:none">🧹 امسح</button></div>
   <div class="chat" id="chat">${state.chat.length ? state.chat.map(msgHtml).join('') : '<div class="sub" style="text-align:center;padding:20px">اسأل عن أي مصروف، ابعت مصاريف اليوم، أو صورة فاتورة.</div>'}${ui.sending ? '<div class="msg assistant" id="typing">… بفكّر</div>' : ''}</div>
   <div class="composer">
+    <div class="row" style="justify-content:flex-start;margin-bottom:6px"><button type="button" class="chip deep ${ui.deep ? 'on' : ''}" data-act="toggleDeep" aria-pressed="${!!ui.deep}" style="flex:none">🧠 تحليل أعمق</button><span class="sub">لهالسؤال بس، بـ <span class="amt nw">${esc(settings().deepModel)}</span></span></div>
     ${ui.pendingImg ? `<div class="row" style="justify-content:flex-start"><img class="preview-img" src="${ui.pendingImg.thumb}" alt=""><button class="btn sm ghost" data-act="dropImg" style="flex:none">✕</button></div>` : ''}
     <div class="row"><label class="iconbtn" aria-label="صورة" style="cursor:pointer">📷<input id="imgIn" type="file" accept="image/*" hidden></label>
     <textarea id="chatIn" rows="1" placeholder="اكتب…" dir="auto">${esc(ui.chatDraft || '')}</textarea>
@@ -366,7 +389,7 @@ AFTER.ask = () => {
 function msgHtml(m) {
   if (m.role === 'error') return `<div class="msg assistant" style="border-color:var(--bad)">⚠️ ${esc(m.text)}</div>`;
   const logs = (m.logs || []).map((l, i) => `<button class="btn sm logbtn" data-act="logFromChat" data-id="${m.id}" data-i="${i}" ${l.done ? 'disabled' : ''}>${l.done ? '✓ انسجل' : `سجّل ${esc(l.amount)} · ${esc(l.cat)}${l.note ? ' · ' + esc(l.note) : ''}`}</button>`).join('');
-  return `<div class="msg ${m.role}">${m.thumb ? `<img src="${m.thumb}" alt="">` : ''}${esc(m.text)}${logs ? `<div>${logs}</div>` : ''}${m.cost != null ? `<div class="meta">${fmtUsd(m.cost)} · ${esc(m.model || '')}</div>` : ''}</div>`;
+  return `<div class="msg ${m.role}">${m.thumb ? `<img src="${m.thumb}" alt="">` : ''}${esc(m.text)}${logs ? `<div>${logs}</div>` : ''}${m.role === 'user' && m.deep ? '<div class="meta">🧠 تحليل أعمق</div>' : ''}${m.cost != null ? `<div class="meta">${m.deep ? '🧠 ' : ''}<span class="amt nw">${esc(m.model || '')} · ${fmtUsd(m.cost)}</span></div>` : ''}</div>`;
 }
 function monthCost() { const c = state.kv.cost; return c && c.month === thisMonth() ? c.usd : 0; }
 
@@ -385,9 +408,10 @@ async function sendChat(text) {
   if (monthCost() >= settings().capUsd) { toast(`وصلت الحد الشهري ${fmtUsd(settings().capUsd)}. غيّره بالإعدادات.`); return; }
   if (ui.sending) return;
   const img = ui.pendingImg;
-  const userMsg = { id: uid(), ts: Date.now(), role: 'user', text: text || '(صورة)', thumb: img?.thumb || null };
+  const deep = !!ui.deep;
+  const userMsg = { id: uid(), ts: Date.now(), role: 'user', text: text || '(صورة)', thumb: img?.thumb || null, deep };
   await saveRec('chat', userMsg);
-  ui.pendingImg = null; ui.chatDraft = ''; ui.sending = true;
+  ui.pendingImg = null; ui.chatDraft = ''; ui.sending = true; ui.deep = false; // deep = this one message only
   if (ui.view !== 'ask') ui.view = 'ask';
   render();
   // last ~10 turns, plain text; context + image only on the newest message
@@ -400,12 +424,12 @@ async function sendChat(text) {
     content.push({ type: 'text', text: `${C.buildContext(state)}\n\n${text || 'شوف هالصورة.'}` });
     return { role: 'user', content };
   });
-  const model = C.currentModel(state);
+  const model = deep ? (settings().deepModel || 'claude-opus-5-5') : C.currentModel(state);
   try {
-    const r = await C.callClaude(key, model, C.SYSTEM_PROMPT, messages);
+    const r = await C.callClaude(key, model, C.SYSTEM_PROMPT, messages, deep);
     const cost = C.costOf(state, model, r.usage);
     const { clean, logs } = C.extractLogs(r.text);
-    await saveRec('chat', { id: uid(), ts: Date.now(), role: 'assistant', text: clean || '…', logs, cost, model, usage: r.usage });
+    await saveRec('chat', { id: uid(), ts: Date.now(), role: 'assistant', text: clean || '…', logs, cost, model: r.model || model, deep, usage: r.usage });
     const cm = thisMonth();
     await setKV('cost', { month: cm, usd: (state.kv.cost?.month === cm ? state.kv.cost.usd : 0) + cost });
   } catch (err) {
@@ -428,11 +452,12 @@ VIEWS.settings = () => {
   const cats = [...state.kv.categories].sort((a, b) => a.order - b.order);
   const priceRows = Object.entries(s.prices).map(([m, [i, o]]) => `<div class="row" data-model="${esc(m)}"><span class="sub amt" style="flex:1.4">${esc(m)}</span><input type="text" inputmode="decimal" class="prIn amt" value="${i}"><input type="text" inputmode="decimal" class="prOut amt" value="${o}"></div>`).join('');
   return `<h2>🔑 Claude</h2><div class="card">
-    <label class="field"><span>مفتاح API ${state.kv.apiKey ? '<span class="pill good">محفوظ</span>' : ''}</span><input id="apiKey" type="password" autocomplete="off" placeholder="${state.kv.apiKey ? '•••••• (محفوظ)' : 'sk-ant-...'}"></label>
+    <label class="field"><span>مفتاح API ${state.kv.apiKey ? '<span class="pill good">محفوظ</span>' : ''}</span><input id="apiKey" type="password" dir="ltr" autocomplete="off" placeholder="${state.kv.apiKey ? '•••••• (محفوظ)' : 'sk-ant-...'}"></label>
     <div class="btns"><button class="btn" data-act="saveKey">احفظ المفتاح</button>${state.kv.apiKey ? '<button class="btn danger" data-act="delKey">امسح المفتاح</button>' : ''}</div>
     <div class="sub">المفتاح بضل بهالتلفون بس (IndexedDB)، وما بنحط بالكود ولا بالنسخة الاحتياطية إلا إذا اخترت.</div>
     <label class="field"><span>الموديل</span><select id="model">${C.MODELS.map(m => `<option ${m === s.model ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
-    <label class="field"><span>أو اكتب موديل (اختياري)</span><input id="customModel" type="text" dir="ltr" value="${esc(s.customModel)}" placeholder="claude-..."></label>
+    <label class="field"><span>موديل "تحليل أعمق"</span><select id="deepModel">${C.DEEP_MODELS.map(m => `<option ${m === s.deepModel ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+    <label class="field"><span>أو اكتب موديل عادي (اختياري)</span><input id="customModel" type="text" dir="ltr" value="${esc(s.customModel)}" placeholder="claude-..."></label>
     <label class="field"><span>حد الصرف الشهري ($)</span><input id="capUsd" type="text" inputmode="decimal" class="amt" value="${s.capUsd}"></label>
     <div class="sub">هالشهر: ${fmtUsd(monthCost())}</div>
     <details style="margin-top:8px"><summary class="sub">أسعار الموديلات ($ لكل مليون توكن: دخول / خروج)</summary>${priceRows}</details>
@@ -456,7 +481,7 @@ VIEWS.settings = () => {
     <div class="btns"><button class="btn" data-act="catAdd">➕ تصنيف</button><button class="btn pri" data-act="catSave">احفظ التصنيفات</button></div></div>
 
   <h2>💾 نسخة احتياطية</h2><div class="card">
-    <div class="sub">آخر نسخة: ${state.kv.lastBackup ? new Date(state.kv.lastBackup).toLocaleString('ar-JO') : 'ولا مرة'}</div>
+    <div class="sub">آخر نسخة: ${state.kv.lastBackup ? dayLabel(ymd(new Date(state.kv.lastBackup))) : 'ولا مرة'}</div>
     <label class="toggle"><span>ضمّن مفتاح API بالملف</span><input id="incKey" type="checkbox"></label>
     <div class="btns"><button class="btn pri" data-act="export">⬆️ صدّر</button><label class="btn" style="cursor:pointer">⬇️ استرجع<input id="importIn" type="file" accept="application/json,.json" hidden></label></div>
     <div class="sub">احفظ الملف بـ Files ← iCloud Drive.</div></div>
@@ -490,7 +515,7 @@ function readCatEdits() {
 // ----- Backup -----
 async function exportData() {
   const includeKey = $('#incKey')?.checked;
-  const kv = { ...state.kv };
+  const kv = { ...state.kv, lastBackup: Date.now() };
   if (!includeKey) delete kv.apiKey;
   const data = { app: 'masroofi', version: 1, exportedAt: new Date().toISOString(), entries: state.entries, transfers: state.transfers, incomes: state.incomes, obligations: state.obligations, chat: state.chat, kv };
   const name = `masroofi-backup-${today()}.json`;
@@ -519,6 +544,7 @@ async function importFile(file) {
   if (!confirm(`رح أستبدل كل البيانات الحالية بالنسخة (${n} مصروف، ${(data.incomes || []).length} دخل، ${(data.obligations || []).length} التزام) من ${String(data.exportedAt || '').slice(0, 10)}. متأكد؟`)) return;
   await db.replaceAll({ ...data, __keepKey: true });
   await load();
+  if (!state.kv.lastBackup && data.exportedAt) await setKV('lastBackup', Date.parse(data.exportedAt) || Date.now());
   toast('انسترجعت ✓');
   render();
 }
@@ -581,9 +607,12 @@ function showGuide() {
 // ---------------- Actions ----------------
 const ACT = {
   go: el => go(el.dataset.v),
+  back: () => go(ui.prevView && ui.prevView !== 'settings' ? ui.prevView : 'add'),
+  toggleDeep: el => { ui.deep = !ui.deep; el.classList.toggle('on', ui.deep); el.setAttribute('aria-pressed', ui.deep); },
   seg: el => {
     const name = el.dataset.name, val = el.dataset.val;
     el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el));
+    el.parentElement.nextElementSibling?.classList.contains('nonehint') && el.parentElement.nextElementSibling.classList.toggle('hidden', val !== 'none');
     if (name === 'qaFrom') ui.qa.from = val;
     if (name === 'pFrom' && ui.parsed) ui.parsed.from = val;
     if (name === 'bigFrom') ui.bigFrom = val;
@@ -591,7 +620,7 @@ const ACT = {
   pickCat: el => {
     const q = ui.qa; q.cat = el.dataset.id; q.sub = '';
     const c = L.catById(state, q.cat);
-    if (!q.rafahTouched || c?.kind === 'sadaqa') q.rafah = c?.kind === 'sadaqa' ? false : !!c?.rafah;
+    q.rafah = c?.kind === 'sadaqa' ? false : !!c?.rafah; q.rafahTouched = false; // each pick resets to the category default
     q.amount = $('#qaAmount').value; q.note = $('#qaNote').value;
     const y = window.scrollY; render(); window.scrollTo(0, y);
   },
@@ -749,7 +778,7 @@ const ACT = {
   delKey: async () => { if (!confirm('نمسح المفتاح من التلفون؟')) return; delete state.kv.apiKey; await db.kvDel('apiKey'); render(); },
   saveAI: async () => {
     const s = settings();
-    s.model = $('#model').value; s.customModel = $('#customModel').value.trim(); s.notes = $('#notes').value;
+    s.model = $('#model').value; s.deepModel = $('#deepModel').value; s.customModel = $('#customModel').value.trim(); s.notes = $('#notes').value;
     const cap = parseFloat($('#capUsd').value); if (!isNaN(cap) && cap >= 0) s.capUsd = cap;
     $$('[data-model]').forEach(r => { const i = parseFloat(r.querySelector('.prIn').value), o = parseFloat(r.querySelector('.prOut').value); if (!isNaN(i) && !isNaN(o)) s.prices[r.dataset.model] = [i, o]; });
     await saveSettings(); toast('انحفظ ✓');
@@ -801,7 +830,7 @@ function incomeSheet(inc) {
   openSheet(`<h3>${inc ? 'تعديل دخل' : 'دخل متوقع'}</h3>
     <label class="field"><span>المصدر</span><input id="iSrc" type="text" value="${esc(i.source)}"></label>
     <label class="field"><span>المبلغ</span><input id="iAmt" type="text" inputmode="decimal" class="amt" value="${i.amount ? jd(i.amount) : ''}" placeholder="0.000"></label>
-    <label class="field"><span>التاريخ المتوقع</span><input id="iDate" type="date" value="${i.date}"></label>
+    <div class="field"><span>التاريخ المتوقع</span>${dateField('iDate', i.date)}</div>
     <label class="field"><span>بتتكرر</span><select id="iRecur"><option value="none">لا</option><option value="monthly">كل شهر</option><option value="yearly">كل سنة</option><option value="months">أشهر معينة</option></select></label>
     <div id="iMonths" class="chips ${i.recur === 'months' ? '' : 'hidden'}">${AR_MONTHS.map((m, k) => `<label class="chip"><input type="checkbox" value="${k + 1}" ${(i.months || []).includes(k + 1) ? 'checked' : ''}> ${m}</label>`).join('')}</div>
     <label class="field toggle"><span>أكيد؟</span><input id="iSure" type="checkbox" ${i.sure ? 'checked' : ''}></label>
@@ -823,7 +852,7 @@ function oblSheet(o) {
   openSheet(`<h3>${o ? 'تعديل التزام' : 'التزام / دين'}</h3>
     <label class="field"><span>شو هو</span><input id="oTitle" type="text" value="${esc(x.title)}"></label>
     <label class="field"><span>المبلغ الكامل</span><input id="oAmt" type="text" inputmode="decimal" class="amt" value="${x.amount ? jd(x.amount) : ''}" placeholder="0.000"></label>
-    <label class="field"><span>تاريخ الاستحقاق (اختياري)</span><input id="oDue" type="date" value="${x.due || ''}"></label>
+    <div class="field"><span>تاريخ الاستحقاق (اختياري)</span>${dateField('oDue', x.due || '')}</div>
     <label class="field"><span>الأولوية</span><select id="oPrio">${Object.entries(PRIO).map(([k, v]) => `<option value="${k}" ${k === x.priority ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <label class="field toggle"><span>بتتكرر كل شهر</span><input id="oMonthly" type="checkbox" ${x.monthly ? 'checked' : ''}></label>
     <div class="btns"><button class="btn pri" id="oSave">احفظ</button><button class="btn ghost" id="oCancel">إلغاء</button></div>`, sh => {
@@ -843,6 +872,15 @@ document.addEventListener('click', e => {
   const fn = ACT[el.dataset.act];
   if (fn) { if (el.tagName === 'A') e.preventDefault(); fn(el, e); }
 });
+// keep the Arabic label of invisible date/month pickers in sync
+function syncDateLabel(e) {
+  const inp = e.target; if (!inp.closest?.('.datebox')) return;
+  const lab = inp.parentElement.querySelector('.dlabel');
+  lab.textContent = !inp.value ? (lab.dataset.empty || '') : inp.type === 'month' ? monthLabel(inp.value) : dayLabel(inp.value);
+}
+document.addEventListener('input', syncDateLabel);
+document.addEventListener('click', e => { const inp = e.target.closest?.('.datebox input'); if (inp) { try { inp.showPicker?.(); } catch {} } });
+document.addEventListener('change', syncDateLabel);
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.id === 'qaAmount') { e.preventDefault(); $('#qaNote')?.focus(); }
   if (e.key === 'Enter' && e.target.id === 'chatIn' && !e.shiftKey && matchMedia('(pointer:fine)').matches) { e.preventDefault(); sendChat(e.target.value); }

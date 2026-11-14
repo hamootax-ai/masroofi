@@ -55,7 +55,10 @@ export const AR_MONTHS = ['كانون الثاني', 'شباط', 'آذار', 'ن
 export const AR_DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
 export function monthLabel(ym) { const [y, m] = ym.split('-').map(Number); return `${AR_MONTHS[m - 1]} ${y}`; }
-export function dayLabel(s) { const d = parseYmd(s); return `${AR_DAYS[d.getDay()]} ${d.getDate()} ${AR_MONTHS[d.getMonth()]}`; }
+/** One date style everywhere: "السبت 14 تشرين الثاني 2026" */
+export function dayLabel(s) { const d = parseYmd(s); return `${AR_DAYS[d.getDay()]} ${d.getDate()} ${AR_MONTHS[d.getMonth()]} ${d.getFullYear()}`; }
+/** Short form where space is tight: "14 تشرين الثاني" (+ year if not this year) */
+export function dateShort(s) { if (!s) return ''; const d = parseYmd(s); return `${d.getDate()} ${AR_MONTHS[d.getMonth()]}${d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : ''}`; }
 
 export function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
