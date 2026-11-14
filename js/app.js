@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.4.1';
+export const APP_VERSION = '1.4.2';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 const MANUAL_ONLY = true;
 const $ = s => document.querySelector(s);
@@ -999,7 +999,7 @@ const ACT = {
     const acc = el.dataset.acc, b = L.balances(state), a = state.kv.accounts;
     const isCard = acc === 'card';
     openSheet(`<h3>${isCard ? 'البطاقة' : L.ACCOUNTS[acc]}</h3>
-      <label class="field"><span>${isCard ? 'المطلوب منك هلأ (الرصيد المستحق الحقيقي)' : 'الرصيد الحقيقي هلأ'}</span><input id="bVal" type="text" inputmode="decimal" class="amount-in" value="${jd(b[acc])}"></label>
+      <label class="field"><span>${isCard ? 'المطلوب منك هلأ ("القائم" بتطبيق البنك، مش "المستحق")' : 'الرصيد الحقيقي هلأ'}</span><input id="bVal" type="text" inputmode="decimal" class="amount-in" value="${jd(b[acc])}"></label>
       ${isCard ? `<label class="field"><span>حد البطاقة</span><input id="bLimit" type="text" inputmode="decimal" class="amt" value="${jd(a.card.limit || 0)}"></label>` : ''}
       <div class="sub">الرقم اللي بتكتبه بيحل محل التقدير. المصاريف والتحويلات بعد هيك بتنحسب عليه.</div>
       <div class="btns"><button class="btn pri" id="bSave">احفظ</button><button class="btn ghost" id="bCancel">إلغاء</button></div>`, sh => {
