@@ -183,3 +183,8 @@ details.adv > summary { cursor: pointer; font-weight: 600; list-style: none; pad
 details.adv > summary::-webkit-details-marker { display: none; }
 details.adv > summary::after { content: ' ▾'; color: var(--mute); }
 details.adv[open] > summary { margin-bottom: 8px; }
+
+/* v1.6.1 (Ahmad: "تطبيق زي هيك غلط نقدر نعمل زووم") an app does not pinch-zoom or double-tap-zoom */
+html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
+button, a, input, select, textarea, label { touch-action: manipulation; }
+.verbadge { text-align: center; color: var(--mute); font-size: .8rem; margin: 2px 0 6px; }

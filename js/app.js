@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.6.0';
+export const APP_VERSION = '1.6.1';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -774,7 +774,7 @@ VIEWS.settings = () => {
   const s = settings();
   const cats = [...state.kv.categories].sort((a, b) => a.order - b.order);
   const priceRows = Object.entries(s.prices).map(([m, [i, o]]) => `<div class="row" data-model="${esc(m)}"><span class="sub amt" style="flex:1.4">${esc(m)}</span><input type="text" inputmode="decimal" class="prIn amt" value="${i}"><input type="text" inputmode="decimal" class="prOut amt" value="${o}"></div>`).join('');
-  return `<h2>🔑 Claude</h2><div class="card">
+  return `<div class="verbadge">مصروفي <b class="amt">v${APP_VERSION}</b></div><h2>🔑 Claude</h2><div class="card">
     <label class="field"><span>مفتاح API ${state.kv.apiKey ? '<span class="pill good">محفوظ</span>' : ''}</span><input id="apiKey" type="password" dir="ltr" autocomplete="off" placeholder="${state.kv.apiKey ? '•••••• (محفوظ)' : 'sk-ant-...'}"></label>
     <div class="btns"><button class="btn" data-act="saveKey">احفظ المفتاح</button>${state.kv.apiKey ? '<button class="btn danger" data-act="delKey">امسح المفتاح</button>' : ''}</div>
     <div class="sub">المفتاح بضل بهالتلفون بس (IndexedDB)، وما بنحط بالكود ولا بالنسخة الاحتياطية إلا إذا اخترت.</div>
@@ -1229,6 +1229,8 @@ document.addEventListener('focusin', e => {
   if (/^[0.,\s]*$/.test(inp.value)) inp.value = '';
   else setTimeout(() => { try { inp.select(); } catch {} }, 0);
 });
+// (v1.6.1) iOS ignores user-scalable=no in Safari: block the pinch gesture itself
+['gesturestart', 'gesturechange'].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
 document.addEventListener('input', syncDateLabel);
 document.addEventListener('click', e => { const inp = e.target.closest?.('.datebox input'); if (inp) { try { inp.showPicker?.(); } catch {} } });
 document.addEventListener('change', syncDateLabel);
