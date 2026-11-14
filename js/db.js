@@ -1,7 +1,8 @@
 // IndexedDB storage. All data is loaded into memory at start (it is small) and written through on change.
 const DB_NAME = 'masroofi';
-const DB_VERSION = 1;
-export const STORES = ['entries', 'transfers', 'incomes', 'obligations', 'chat'];
+// v2 (v1.7): + 'receivables' (money other people owe him). onupgradeneeded only adds the missing store, nothing else changes.
+const DB_VERSION = 2;
+export const STORES = ['entries', 'transfers', 'incomes', 'obligations', 'receivables', 'chat'];
 
 let db;
 
@@ -18,7 +19,7 @@ export async function openDB() {
       for (const s of STORES) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' });
       if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
     };
-    r.onsuccess = () => res(r.result);
+    r.onsuccess = () => { const d = r.result; d.onversionchange = () => d.close(); res(d); };
     r.onerror = () => rej(r.error);
   });
   return db;
@@ -29,6 +30,13 @@ const tx = (store, mode = 'readonly') => db.transaction(store, mode).objectStore
 export const getAll = store => req(tx(store).getAll());
 export const put = (store, obj) => req(tx(store, 'readwrite').put(obj));
 export const del = (store, id) => req(tx(store, 'readwrite').delete(id));
+/** Many records in one transaction (bulk paste / import). */
+export function putMany(store, recs) {
+  return new Promise((res, rej) => { const t = db.transaction(store, 'readwrite'); const os = t.objectStore(store); for (const r of recs) os.put(r); t.oncomplete = res; t.onerror = () => rej(t.error); });
+}
+export function delMany(store, ids) {
+  return new Promise((res, rej) => { const t = db.transaction(store, 'readwrite'); const os = t.objectStore(store); for (const id of ids) os.delete(id); t.oncomplete = res; t.onerror = () => rej(t.error); });
+}
 export const clearStore = store => req(tx(store, 'readwrite').clear());
 export const kvGet = key => req(tx('kv').get(key));
 export const kvSet = (key, val) => req(tx('kv', 'readwrite').put(val, key));

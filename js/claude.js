@@ -47,6 +47,7 @@ export function buildContext(state, ref = today()) {
     `السيولة: توفير ${jd(b.savings)} + كاش ${jd(b.cash)} − البطاقة ${jd(b.card)} = ${jd(b.net)}. البطاقة: مستحق ${jd(cc.dueAmount)} يوم ${dateShort(cc.dueDate)}${b.cardLimit ? `، المتاح ${jd(b.cardAvail)}` : ''}.`,
     `التزامات خلال 60 يوم: ${obl.list.map(o => `${o.title} ${jd(o.amount)} (${dateShort(o.date)})`).join('، ') || 'ولا شي'}${obl.noDate.length ? `. بدون تاريخ: ${obl.noDate.map(o => `${o.title} ${jd(o.amount)}`).join('، ')}` : ''}.`,
     `دخل متوقع (مش محسوب بالسيولة لحد ما يوصل): ${inc.map(i => `${i.source} ${jd(i.amount)} ${dateShort(i.date)}${i.sure ? ' أكيد' : ' مش أكيد'}`).join('، ') || 'ولا شي'}.`,
+    `إلي عند الناس (مش محسوب بالسيولة): ${(state.receivables || []).filter(r => !r.done).map(r => `${r.who} ${r.amount > 0 ? jd(r.amount) : (r.amountText || 'بدون رقم')}${r.due ? ' ' + dateShort(r.due) : r.expected ? ' ' + r.expected : ''}${r.sure ? ' أكيد' : ' مش أكيد'}`).join('، ') || 'ولا شي'}.`,
     `التصنيفات: ${state.kv.categories.map(c => c.name).join('، ')}.`,
   ];
   const notes = S(state).notes?.trim();

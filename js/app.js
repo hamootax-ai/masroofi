@@ -1,19 +1,45 @@
 import * as db from './db.js';
-import { uid, toFils, jd, jdShort, today, thisMonth, addMonths, monthLabel, dayLabel, dateShort, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS } from './util.js';
+import { uid, toFils, jd, jdShort, nDays, nItems, today, thisMonth, addMonths, monthLabel, dayLabel, dateShort, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS } from './util.js';
 import * as L from './logic.js';
 import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.6.2';
+export const APP_VERSION = '1.7.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
+
+/* (v1.7) Settings -> "📥 استيراد بيانات": paste a JSON block. It only ADDS (never replaces); exact duplicates are skipped.
+   Amounts are JD numbers (100, 12.5) and become integer fils. Dates are "YYYY-MM-DD". Every list is optional.
+{
+  "incomes": [        // expected income (فلوسي -> دخل)
+    { "source": "مثال راتب", "amount": 100, "date": "2026-12-01",
+      "recur": "monthly",           // "none" (default) | "monthly" | "yearly" | "months"
+      "months": [],                 // with "months": the month numbers 1..12, e.g. [3, 9]
+      "sure": true }                // default true; only sure income goes into the worst case
+  ],
+  "obligations": [    // what he owes (فلوسي -> التزامات)
+    { "title": "مثال قسط", "amount": 100,  // the FULL amount
+      "due": "2026-12-05",          // or null (then it is not in the projection)
+      "priority": "mid",            // "high" | "mid" (default) | "low"
+      "monthly": false,             // repeats every month after it is paid
+      "paid": 0 }                   // optional: already paid before the app (touches no balance)
+  ],
+  "receivables": [    // what people owe HIM (فلوسي -> إلي)
+    { "who": "مثال", "amount": 100, // or null when it is not one number...
+      "amountText": "",             // ...then e.g. "100-150" / "حسب الحكم"
+      "expected": "2027-01-15",     // a date, or free text ("بعد الموسم"); "due" also takes a date
+      "sure": false,                // default false; only sure + a number + a date counts in the projection
+      "note": "" }
+  ]
+}
+   Duplicate = same source+amount+date (income), title+amount+due (obligation), who+amount+amountText+date+expected (receivable). */
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
 // ---------------- State ----------------
-const state = { entries: [], transfers: [], incomes: [], obligations: [], chat: [], kv: {} };
+const state = { entries: [], transfers: [], incomes: [], obligations: [], receivables: [], chat: [], kv: {} };
 const DEFAULT_SETTINGS = { rafahBudget: 60000, stmtDay: 20, dueDay: 4, model: 'claude-haiku-5-5', customModel: '', deepModel: 'claude-opus-5-5', prices: structuredClone(C.DEFAULT_PRICES), pricesVersion: 2, capUsd: 5, notes: '', sortByUse: true };
 const ui = {
   view: 'add', dayDate: today(), monthYm: thisMonth(), moneySeg: 'acc', projDate: null,
@@ -114,7 +140,7 @@ function go(v) {
 /** Backup reminder level: never exported = yellow, red once there's been data for 3+ days; exported = ok, yellow after 7 days. */
 function backupStatus() {
   const lb = state.kv.lastBackup;
-  const recs = [...state.entries, ...state.incomes, ...state.obligations, ...state.transfers];
+  const recs = [...state.entries, ...state.incomes, ...state.obligations, ...state.receivables, ...state.transfers];
   const hasData = recs.length > 0;
   if (!lb) {
     const firstTs = hasData ? Math.min(...recs.map(r => r.ts || Date.now())) : Date.now();
@@ -167,8 +193,9 @@ VIEWS.add = () => {
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
   ${MANUAL_ONLY ? '' : `<button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك${reviewCount() ? ` <span class="pill warn" id="reviewBadge">${reviewCount()} بدها مراجعة</span>` : ''}</button>${inboxOn() ? `<div class="sub" style="text-align:center" id="homeLastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}</div>` : ''}`}
-  <details class="card" id="pasteBox" ${ui.parsed ? 'open' : ''}>
+  <details class="card" id="pasteBox" ${ui.parsed || ui.multi || ui.multiDone ? 'open' : ''}>
     <summary>📋 الصق ملاحظة اليوم</summary>
+    <div class="sub" style="margin:6px 0">يوم واحد، أو ملاحظة فيها كذا يوم (كل يوم ببلّش بتاريخ) وأنا بقسمها.</div>
     <textarea id="noteText" placeholder="November 13&#10;20jd groceries&#10;13.15 gasoline&#10;Total 33.15 JD // Rafaheyah 0 JD" dir="auto">${esc(ui.noteText || '')}</textarea>
     <button class="btn" data-act="parse" style="margin-top:8px">حلّل</button>
     <div id="parsed">${parsedHtml()}</div>
@@ -183,9 +210,29 @@ AFTER.add = () => {
   $('#noteText').addEventListener('input', e => { ui.noteText = e.target.value; });
 };
 
+// (v1.7) a note with many days: one preview for all of them, saved as 'none' entries (his balances are already the real ones)
+function multiHtml() {
+  const m = ui.multi;
+  const { add, skipped } = L.dedupeDayItems(state, m.days);
+  const off = m.days.filter(d => d.totalOff).length;
+  return `<div class="card hero" id="multiSum" style="margin:10px 0"><div class="lbl">ملاحظة فيها <b>${nDays(m.days.length)}</b> · ${nItems(m.count)}</div>
+    <div class="big amt">${jd(m.sum)}</div>
+    <div class="minirow" style="justify-content:center"><span>من ${fd(m.from)} لـ ${fd(m.to)}</span></div></div>
+  ${m.warnings.map(w => `<div class="banner yellow">${/^[✅ℹ️⚠️]/u.test(w) ? '' : '⚠️ '}${esc(w)}</div>`).join('')}
+  ${skipped ? `<div class="banner blue" id="multiDups">↩️ ${skipped} ${skipped === 1 ? 'بند موجود' : 'بنود موجودة'} قبل (نفس التاريخ والمبلغ والنص)، رح أتخطاها.</div>` : ''}
+  <div class="banner blue">💡 رح ينحسبوا بمجموع الأيام والشهور والرفاهية، بس <b>ما بيغيّروا أي رصيد</b> (أرصدتك مكتوبة على الحقيقي).</div>
+  <button class="btn pri" data-act="mSave" id="mSaveBtn" ${add.length ? '' : 'disabled'}>${add.length ? `ضيف ${nItems(add.length)}` : 'كله موجود قبل'}</button>
+  <ul class="list daylist" id="dayList">${m.days.map(d => `<li class="item"><div class="ic">${d.totalOff || d.rafahMatched === false ? '⚠️' : '📅'}</div>
+    <div class="main"><div class="t">${dayLabel(d.date)}</div><div class="s">${d.items.length ? nItems(d.items.length) : 'ما في بنود'}${d.items.some(i => i.rafah) ? ` · رفاهية <span class="amt">${jdShort(d.items.filter(i => i.rafah).reduce((a, i) => a + i.amount, 0))}</span>` : ''}</div>
+    ${d.totalOff ? `<div class="s warn">المجموع بالملاحظة <span class="amt">${jd(d.total)}</span></div>` : ''}${d.warnings.filter(w => !/^المجموع بالملاحظة/.test(w)).map(w => `<div class="s warn">${esc(w)}</div>`).join('')}</div>
+    <div class="v amt">${jd(d.sum)}</div></li>`).join('')}</ul>
+  ${off ? '' : `<div class="sub" style="text-align:center">✅ كل الأيام مجموعها مطابق للملاحظة</div>`}`;
+}
+
 function parsedHtml() {
+  if (ui.multi) return multiHtml();
   const p = ui.parsed;
-  if (!p) return '';
+  if (!p) return ui.multiDone ? `<div class="banner blue" id="multiDone">${ui.multiDone}</div>` : '';
   if (!p.items.length) return `<div class="banner yellow">ما لقيت بنود. الصيغة: <span class="amt">20jd groceries</span></div>`;
   return `${p.warnings.map(w => `<div class="banner yellow">⚠️ ${esc(w)}</div>`).join('')}
   <div class="field"><span>التاريخ ${p.dateFound ? '' : '(ما لقيت تاريخ، حطيت اليوم)'}</span>${dateField('pDate', p.date)}</div>
@@ -307,8 +354,8 @@ VIEWS.month = () => {
 AFTER.month = () => { $('#monPick').addEventListener('change', e => { if (e.target.value) { ui.monthYm = e.target.value; render(); } }); };
 
 // ----- Money (accounts / income / obligations / projection / big purchase) -----
-const MONEY_SEGS = { acc: 'حسابات', inc: 'دخل', obl: 'التزامات', proj: 'توقّع', big: 'قبل الشرا' };
-VIEWS.money = () => `<div class="seg" style="margin-bottom:8px">${Object.entries(MONEY_SEGS).map(([k, v]) => `<button data-act="moneySeg" data-val="${k}" class="${ui.moneySeg === k ? 'on' : ''}">${v}</button>`).join('')}</div>${MONEY[ui.moneySeg]()}`;
+const MONEY_SEGS = { acc: 'حسابات', inc: 'دخل', rec: 'إلي', obl: 'التزامات', proj: 'توقّع', big: 'قبل الشرا' };
+VIEWS.money = () => `<div class="seg moneyseg" style="margin-bottom:8px">${Object.entries(MONEY_SEGS).map(([k, v]) => `<button data-act="moneySeg" data-val="${k}" class="${ui.moneySeg === k ? 'on' : ''}">${v}</button>`).join('')}</div>${MONEY[ui.moneySeg]()}`;
 const MONEY = {};
 MONEY.acc = () => {
   const b = L.balances(state), cc = L.cardCycle(state), a = state.kv.accounts;
@@ -341,6 +388,79 @@ MONEY.inc = () => {
   <button class="btn" data-act="newInc" style="margin-top:10px">➕ دخل متوقع</button></div>
   ${rec.length ? `<h2>وصل مؤخراً</h2><div class="card"><ul class="list">${rec.map(i => `<li class="item"><div class="ic">💰</div><div class="main"><div class="t">${esc(i.source)}</div><div class="s">${fd(i.receivedDate)} ← ${L.ACCOUNTS[i.account] || ''}</div></div><div class="v amt">${jd(i.receivedAmount ?? i.amount)}</div><div class="acts"><button data-act="delInc" data-id="${i.id}">🗑️</button></div></li>`).join('')}</ul></div>` : ''}`;
 };
+// (v1.7) "إلي عند الناس": money other people owe him. Never in the balances; in the projection only when sure + a number + a date.
+const recvWhen = r => r.due ? `${fd(r.due)}${r.expected ? ' · ' + esc(r.expected) : ''}` : r.expected ? esc(r.expected) : 'بدون موعد';
+MONEY.rec = () => {
+  const all = state.receivables;
+  const open = all.filter(r => !r.done).sort((a, b) => (b.sure - a.sure) || (a.due || '9999').localeCompare(b.due || '9999') || a.ts - b.ts);
+  const got = all.filter(r => r.done).sort((a, b) => (b.receivedTs || 0) - (a.receivedTs || 0)).slice(0, 10);
+  const total = L.sum(open.filter(r => r.amount > 0)), sure = L.sum(open.filter(r => r.amount > 0 && r.sure));
+  const noNum = open.filter(r => !(r.amount > 0)).length;
+  return `<div class="card hero"><div class="lbl">إلي عند الناس</div><div class="big amt" id="recvTotal">${jd(total)}</div>
+    <div class="minirow" style="justify-content:center;gap:14px"><span>أكيد <b class="amt">${jd(sure)}</b></span>${noNum ? `<span>+ ${noNum} بدون رقم</span>` : ''}</div>
+    <div class="sub">مش محسوبين بالسيولة. بالتوقّع بس اللي "أكيد" وإله رقم وتاريخ.</div></div>
+  <div class="card">${open.length ? `<ul class="list" id="recvList">${open.map(r => `<li class="item" style="flex-wrap:wrap"><div class="ic">${r.sure ? '🟢' : '🟡'}</div>
+    <div class="main"><div class="t">${esc(r.who)}</div><div class="s">${recvWhen(r)} · ${r.sure ? 'أكيد' : 'مش أكيد'}</div>${r.note ? `<div class="s">${esc(r.note)}</div>` : ''}</div>
+    <div class="v ${r.amount > 0 ? 'amt' : 'sub'}">${esc(L.recvLabel(r))}</div>
+    <div class="acts" style="width:100%;justify-content:flex-end;margin-top:6px"><button class="btn sm" data-act="recvGot" data-id="${r.id}">✔️ وصلني</button><button data-act="editRecv" data-id="${r.id}" aria-label="تعديل">✏️</button><button data-act="delRecv" data-id="${r.id}" aria-label="حذف">🗑️</button></div></li>`).join('')}</ul>` : '<div class="sub">ما في حدا عليه إلك. 👌</div>'}
+  <button class="btn" data-act="newRecv" style="margin-top:10px">➕ إلي عند حدا</button></div>
+  ${got.length ? `<h2>وصلني</h2><div class="card"><ul class="list" id="recvGotList">${got.map(r => `<li class="item"><div class="ic">✔️</div><div class="main"><div class="t">${esc(r.who)}</div><div class="s">${fd(r.receivedDate)}${r.incomeId ? ` ← ${L.ACCOUNTS[r.account] || ''}` : ' · ما انضاف لحساب'}</div></div><div class="v amt">${r.receivedAmount > 0 ? jd(r.receivedAmount) : esc(L.recvLabel(r))}</div><div class="acts"><button data-act="recvUndo" data-id="${r.id}" aria-label="رجّعه">↩️</button><button data-act="delRecv" data-id="${r.id}" aria-label="حذف">🗑️</button></div></li>`).join('')}</ul></div>` : ''}`;
+};
+/** "100" / "12.5 jd" is a number; "100-150", "حسب الحكم", "تقريباً 50" stay text. */
+function readRecvAmount(v) {
+  const t = String(v || '').trim();
+  if (!t) return { amount: null, amountText: '' };
+  const n = /^[\d٠-٩]+(?:[.,٫][\d٠-٩]+)?\s*(jd|jod|دينار)?$/i.test(t) ? toFils(t) : NaN;
+  return n > 0 ? { amount: n, amountText: '' } : { amount: null, amountText: t };
+}
+function recvSheet(r) {
+  const x = r || { who: '', amount: null, amountText: '', due: '', expected: '', sure: false, note: '' };
+  openSheet(`<h3>${r ? 'تعديل' : 'إلي عند حدا'}</h3>
+    <label class="field"><span>مين؟</span><input id="rvWho" type="text" value="${esc(x.who)}"></label>
+    <label class="field"><span>كم؟ (رقم، أو اكتب مثل 100-150 أو "حسب الحكم")</span><input id="rvAmt" type="text" dir="auto" value="${esc(x.amount > 0 ? jdShort(x.amount) : x.amountText || '')}" placeholder="0.000"></label>
+    <div class="field"><span>متى متوقع؟ (تاريخ، اختياري)</span>${dateField('rvDue', x.due || '')}</div>
+    <label class="field"><span>أو اكتب متى (اختياري)</span><input id="rvExp" type="text" value="${esc(x.expected || '')}" placeholder="مثلاً بعد الموسم"></label>
+    <label class="field toggle"><span>أكيد؟ (بينحسب بالتوقّع)</span><input id="rvSure" type="checkbox" ${x.sure ? 'checked' : ''}></label>
+    <label class="field"><span>ملاحظة</span><input id="rvNote" type="text" value="${esc(x.note || '')}"></label>
+    <div class="btns"><button class="btn pri" id="rvSave">احفظ</button><button class="btn ghost" id="rvCancel">إلغاء</button></div>`, sh => {
+    sh.querySelector('#rvCancel').onclick = closeSheet;
+    sh.querySelector('#rvSave').onclick = async () => {
+      const who = sh.querySelector('#rvWho').value.trim();
+      if (!who) return toast('اكتب مين');
+      const a = readRecvAmount(sh.querySelector('#rvAmt').value);
+      await saveRec('receivables', { id: r?.id || uid(), ts: r?.ts || Date.now(), done: false, ...r, who, ...a, due: sh.querySelector('#rvDue').value || null, expected: sh.querySelector('#rvExp').value.trim(), sure: sh.querySelector('#rvSure').checked, note: sh.querySelector('#rvNote').value.trim() });
+      closeSheet(); render(); toast('انحفظ ✓');
+    };
+  });
+}
+function recvGotSheet(r) {
+  openSheet(`<h3>وصلك من ${esc(r.who)}؟</h3>
+    <label class="field"><span>المبلغ اللي وصل</span><input id="rgAmt" type="text" inputmode="decimal" class="amount-in" value="${r.amount > 0 ? jd(r.amount) : ''}" placeholder="0.000"></label>
+    <label class="field toggle"><span>ضيفه دخل على حساب</span><input id="rgInc" type="checkbox" checked></label>
+    <div class="field" id="rgAccBox"><span>وين حطيته؟</span>${fromSeg('rgAcc', 'cash')}</div>
+    <div class="sub" id="rgHint">رح ينسجل دخل واصل، والرصيد بيزيد.</div>
+    <div class="btns"><button class="btn pri" id="rgSave">وصل ✓</button><button class="btn ghost" id="rgCancel">إلغاء</button></div>`, sh => {
+    let acc = 'cash';
+    sh.querySelectorAll('[data-name=rgAcc]').forEach(b => b.addEventListener('click', () => { acc = b.dataset.val; }));
+    const inc = sh.querySelector('#rgInc');
+    inc.onchange = () => { sh.querySelector('#rgAccBox').classList.toggle('hidden', !inc.checked); sh.querySelector('#rgHint').textContent = inc.checked ? 'رح ينسجل دخل واصل، والرصيد بيزيد.' : 'بس بتعلّمه وصل، وما بيتغيّر ولا رصيد.'; };
+    sh.querySelector('#rgCancel').onclick = closeSheet;
+    sh.querySelector('#rgSave').onclick = async () => {
+      const raw = sh.querySelector('#rgAmt').value.trim(), a = raw ? toFils(raw) : NaN;
+      if (inc.checked && !(a > 0)) return toast('اكتب المبلغ اللي وصل');
+      if (raw && !(a > 0)) return toast('المبلغ غلط');
+      const ts = Date.now(), upd = { ...r, done: true, receivedTs: ts, receivedDate: today(), receivedAmount: a > 0 ? a : null, account: null, incomeId: null };
+      if (inc.checked) {
+        const income = { id: uid(), ts, source: `من ${r.who}`, amount: a, date: today(), status: 'received', recur: 'none', months: [], sure: true, account: acc, receivedAmount: a, receivedTs: ts, receivedDate: today(), recv: r.id };
+        await saveRec('incomes', income);
+        upd.account = acc; upd.incomeId = income.id;
+      }
+      await saveRec('receivables', upd);
+      closeSheet(); render(); toast(inc.checked ? `${iso('+' + jd(a))} على ${L.ACCOUNTS[acc]} ✓` : 'تعلّم وصل ✓');
+    };
+  });
+}
+
 const PRIO = { high: 'عالية', mid: 'متوسطة', low: 'عادية' };
 MONEY.obl = () => {
   const open = state.obligations.filter(o => !o.done).sort((a, b) => ({ high: 0, mid: 1, low: 2 }[a.priority] - { high: 0, mid: 1, low: 2 }[b.priority]) || (a.due || '9999').localeCompare(b.due || '9999'));
@@ -366,11 +486,14 @@ MONEY.proj = () => {
     <div class="kv"><span>+ دخل أكيد قبل التاريخ</span><span class="amt good">${jd(p.sureInc)}</span></div>
     <div class="kv"><span>+ دخل مش أكيد</span><span class="amt">${jd(p.allInc - p.sureInc)}</span></div>
     ${p.incomes.map(i => `<div class="kv sub"><span>· ${esc(i.source)} ${fd(i.date)}${i.sure ? '' : ' (مش أكيد)'}</span><span class="amt">${jd(i.amount)}</span></div>`).join('')}
+    ${p.recvTotal ? `<div class="kv"><span>+ إلي عند الناس (أكيد) قبل التاريخ</span><span class="amt good" id="projRecv">${jd(p.recvTotal)}</span></div>
+    ${p.recv.map(r => `<div class="kv sub"><span>· ${esc(r.who)} ${fd(r.date)}</span><span class="amt">${jd(r.amount)}</span></div>`).join('')}` : ''}
     <div class="kv"><span>− التزامات مستحقة قبل التاريخ</span><span class="amt bad">${jd(p.oblTotal)}</span></div>
     ${p.obligations.map(o => `<div class="kv sub"><span>· ${esc(o.title)} ${fd(o.date)}</span><span class="amt">${jd(o.amount)}</span></div>`).join('')}
     <div class="kv"><span>− مصروف متوقع (${jd(p.spendAvg)}/شهر × ${p.months.toFixed(2)})</span><span class="amt bad">${jd(p.spendTotal)}</span></div>
     <div class="sub">${esc(p.spendBasis)}</div>
     ${p.noDate.length ? `<div class="sub" style="margin-top:8px">مش محسوبة (بدون تاريخ): ${p.noDate.map(o => `${esc(o.title)} ${jd(o.amount)}`).join('، ')}</div>` : ''}
+    ${p.recvNotCounted.length ? `<div class="sub" style="margin-top:8px">إلي عند الناس ومش محسوب: ${p.recvNotCounted.map(r => `${esc(r.who)} ${esc(r.label)} (${r.why})`).join('، ')}</div>` : ''}
   </div>`;
 };
 AFTER.money = () => {
@@ -811,6 +934,12 @@ VIEWS.settings = () => {
     <div class="sub">آخر سحب: ${agoText(inboxCfg().lastPull)}${inboxCfg().lastError ? ` · <span class="bad">${esc(inboxCfg().lastError)}</span>` : ''}. التوكن بضل بالتلفون بس، وما بنحط بالنسخة الاحتياطية إلا إذا اخترت.</div>
     <button class="btn ghost" data-act="go" data-v="sms" style="margin-top:8px">📩 رسائل البنك</button></div>`}
 
+  <h2>📥 استيراد بيانات</h2><div class="card" id="bulkCard">
+    <div class="sub">الصق JSON فيه دخل والتزامات وإلي عند الناس. <b>بيضيف بس</b>، ما بيمسح ولا بيستبدل شي، واللي موجود قبل بيتخطاه.</div>
+    <textarea id="bulkText" dir="ltr" spellcheck="false" placeholder='{"incomes": [...], "obligations": [...], "receivables": [...]}'>${esc(ui.bulkText || '')}</textarea>
+    <button class="btn" data-act="bulkParse" style="margin-top:8px">حلّل</button>
+    <div id="bulkOut">${bulkHtml()}</div></div>
+
   <h2>💾 نسخة احتياطية</h2><div class="card">
     <div class="sub">آخر نسخة: ${state.kv.lastBackup ? dayLabel(ymd(new Date(state.kv.lastBackup))) : 'ولا مرة'}</div>
     <label class="toggle"><span>ضمّن المفاتيح (Claude + توكن الصندوق) بالملف</span><input id="incKey" type="checkbox"></label>
@@ -827,11 +956,29 @@ VIEWS.settings = () => {
     <div class="sub" style="text-align:center;margin-top:10px">مصروفي v${APP_VERSION}</div></div>`;
 };
 AFTER.settings = () => {
+  $('#bulkText').addEventListener('input', e => { ui.bulkText = e.target.value; });
   $('#importIn').addEventListener('change', e => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ''; });
   $('#sortByUse').addEventListener('change', async e => { settings().sortByUse = e.target.checked; await saveSettings(); toast('انحفظ ✓'); });
   $$('#fontSeg button').forEach(bt => bt.addEventListener('click', async () => { settings().fontScale = Number(bt.dataset.fs); applyFontScale(); await saveSettings(); render(); }));
   navigator.storage?.persisted?.().then(p => { ui.persisted = p; const el = $('#persistState'); if (el) el.innerHTML = p ? '<span class="good">مفعّل ✓</span>' : '<span class="warn">مش مضمون</span>'; }).catch(() => {});
 };
+
+function bulkHtml() {
+  const b = ui.bulk;
+  if (!b) return ui.bulkDone ? `<div class="banner blue" id="bulkDone">${ui.bulkDone}</div>` : '';
+  if (b.error) return `<div class="banner red" id="bulkErr">⚠️ ${esc(b.error)}</div>`;
+  const n = b.incomes.length + b.obligations.length + b.receivables.length, d = b.dups.incomes + b.dups.obligations + b.dups.receivables;
+  const row = (ic, t, v) => `<li class="item"><div class="ic">${ic}</div><div class="main"><div class="t">${esc(t)}</div></div><div class="v ${/^\d/.test(v) ? 'amt' : 'sub'}">${esc(v)}</div></li>`;
+  return `<div class="banner blue" id="bulkPlan">رح أضيف: <b>${b.incomes.length}</b> دخل، <b>${b.obligations.length}</b> التزام، <b>${b.receivables.length}</b> إلك</div>
+  ${d ? `<div class="banner blue" id="bulkDups">↩️ تخطيت ${d} مكرر (موجود قبل)${b.dups.incomes ? ` · دخل ${b.dups.incomes}` : ''}${b.dups.obligations ? ` · التزام ${b.dups.obligations}` : ''}${b.dups.receivables ? ` · إلك ${b.dups.receivables}` : ''}</div>` : ''}
+  ${b.errors.map(e => `<div class="banner yellow">⚠️ ${esc(e)} (ما رح ينضاف)</div>`).join('')}
+  ${n ? `<details class="adv" style="margin:6px 0"><summary>شو رح ينضاف</summary><ul class="list">${[
+    ...b.incomes.map(i => row('💰', `${i.source} · ${dateShort(i.date)}${i.recur !== 'none' ? ' · ' + ({ monthly: 'شهري', yearly: 'سنوي', months: 'أشهر' }[i.recur]) : ''}${i.sure ? '' : ' · مش أكيد'}`, jd(i.amount))),
+    ...b.obligations.map(o => row('🧾', `${o.title}${o.due ? ' · ' + dateShort(o.due) : ''}${o.monthly ? ' · شهري' : ''}`, jd(L.remaining(o)))),
+    ...b.receivables.map(r => row('🤝', `${r.who}${r.due ? ' · ' + dateShort(r.due) : r.expected ? ' · ' + r.expected : ''}${r.sure ? ' · أكيد' : ''}`, L.recvLabel(r))),
+  ].join('')}</ul></details>
+  <button class="btn pri" data-act="bulkSave" id="bulkSaveBtn">ضيف ${n}</button>` : '<div class="sub">ما في شي جديد أضيفه.</div>'}`;
+}
 
 function readCatEdits() {
   $$('#catList .catedit').forEach(row => {
@@ -849,7 +996,7 @@ async function exportData() {
   const includeKey = $('#incKey')?.checked;
   const kv = { ...state.kv, lastBackup: Date.now() };
   if (!includeKey) { delete kv.apiKey; if (kv.inbox) kv.inbox = { ...kv.inbox, token: undefined }; }
-  const data = { app: 'masroofi', version: 1, exportedAt: new Date().toISOString(), entries: state.entries, transfers: state.transfers, incomes: state.incomes, obligations: state.obligations, chat: state.chat, kv };
+  const data = { app: 'masroofi', version: 1, exportedAt: new Date().toISOString(), entries: state.entries, transfers: state.transfers, incomes: state.incomes, obligations: state.obligations, receivables: state.receivables, chat: state.chat, kv };
   const name = `masroofi-backup-${today()}.json`;
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const file = new File([blob], name, { type: 'application/json' });
@@ -873,7 +1020,7 @@ async function importFile(file) {
   try { data = JSON.parse(await file.text()); } catch { return toast('الملف مش مفهوم'); }
   if (data?.app !== 'masroofi') return toast('هاد مش ملف مصروفي');
   const n = (data.entries || []).length;
-  if (!confirm(`رح أستبدل كل البيانات الحالية بالنسخة (${n} مصروف، ${(data.incomes || []).length} دخل، ${(data.obligations || []).length} التزام) من ${String(data.exportedAt || '').slice(0, 10)}. متأكد؟`)) return;
+  if (!confirm(`رح أستبدل كل البيانات الحالية بالنسخة (${n} مصروف، ${(data.incomes || []).length} دخل، ${(data.obligations || []).length} التزام، ${(data.receivables || []).length} إلك) من ${String(data.exportedAt || '').slice(0, 10)}. متأكد؟`)) return;
   await db.replaceAll({ ...data, __keepKey: true });
   await load();
   if (!state.kv.lastBackup && data.exportedAt) await setKV('lastBackup', Date.parse(data.exportedAt) || Date.now());
@@ -982,10 +1129,29 @@ const ACT = {
   },
   parse: () => {
     ui.noteText = $('#noteText').value;
+    ui.multiDone = '';
+    ui.multi = L.parseMultiNote(ui.noteText, state.kv.categories); // 2+ date lines; a one-day note takes the old path below, unchanged
+    if (ui.multi) { ui.parsed = null; $('#parsed').innerHTML = parsedHtml(); return; }
     const p = L.parseNote(ui.noteText, state.kv.categories);
     p.from = 'cash';
     ui.parsed = p;
     $('#parsed').innerHTML = parsedHtml();
+  },
+  mSave: async () => {
+    const m = ui.multi; if (!m) return;
+    const { add, skipped } = L.dedupeDayItems(state, m.days); // again, against what is saved right now
+    const base = Date.now() - add.length;
+    const recs = add.map((it, k) => {
+      const c = L.catById(state, it.cat);
+      return { id: uid(), ts: base + k, date: it.date, amount: it.amount, cat: it.cat, sub: it.sub || '', note: it.text.trim(), from: 'none', rafah: c?.kind === 'sadaqa' ? false : !!it.rafah, paste: 'multi' };
+    });
+    await db.putMany('entries', recs);
+    state.entries.push(...recs);
+    ui.multi = null; ui.noteText = '';
+    ui.multiDone = `✅ انضاف ${nItems(recs.length)} (${nDays(new Set(recs.map(r => r.date)).size)})${skipped ? `، وتخطيت ${skipped} مكرر` : ''}. ما تغيّر ولا رصيد.`;
+    render();
+    const ids = recs.map(r => r.id);
+    toast(`انضاف ${recs.length} ✓`, 'تراجع', async () => { await db.delMany('entries', ids); const set = new Set(ids); state.entries = state.entries.filter(e => !set.has(e.id)); ui.multiDone = '↩️ رجّعت، ما انضاف شي.'; render(); });
   },
   pDel: el => { readParsedEdits(); ui.parsed.items.splice(+el.dataset.i, 1); $('#parsed').innerHTML = parsedHtml(); },
   pSave: async () => {
@@ -1071,6 +1237,21 @@ const ACT = {
       };
     });
   },
+  newRecv: () => recvSheet(),
+  editRecv: el => recvSheet(state.receivables.find(r => r.id === el.dataset.id)),
+  delRecv: async el => {
+    const r = state.receivables.find(x => x.id === el.dataset.id); if (!r) return;
+    if (!confirm(`نحذف "${r.who}"؟${r.incomeId ? ' (الدخل اللي انضاف منه بضل، احذفه من "دخل" إذا بدك)' : ''}`)) return;
+    await delRec('receivables', r.id); render();
+  },
+  recvGot: el => { const r = state.receivables.find(x => x.id === el.dataset.id); if (r) recvGotSheet(r); },
+  recvUndo: async el => {
+    const r = state.receivables.find(x => x.id === el.dataset.id); if (!r) return;
+    if (!confirm(`نرجّع "${r.who}" لسا ما وصل؟${r.incomeId ? ' والدخل اللي انضاف منه بينشال من الحساب.' : ''}`)) return;
+    if (r.incomeId) await delRec('incomes', r.incomeId);
+    await saveRec('receivables', { ...r, done: false, receivedTs: null, receivedDate: null, receivedAmount: null, account: null, incomeId: null });
+    render();
+  },
   newObl: () => oblSheet(),
   editObl: el => oblSheet(state.obligations.find(o => o.id === el.dataset.id)),
   delObl: async el => { if (!confirm('نحذف هالالتزام؟ (الدفعات المسجلة عليه رح تنشال من الحسابات)')) return; await delRec('obligations', el.dataset.id); render(); },
@@ -1132,6 +1313,20 @@ const ACT = {
     const sd = parseInt($('#stmtDay').value, 10), dd = parseInt($('#dueDay').value, 10);
     if (sd >= 1 && sd <= 31) s.stmtDay = sd; if (dd >= 1 && dd <= 31) s.dueDay = dd;
     await saveSettings(); toast('انحفظ ✓'); render();
+  },
+  bulkParse: () => {
+    ui.bulkText = $('#bulkText').value; ui.bulkDone = '';
+    ui.bulk = L.parseImport(ui.bulkText, state);
+    $('#bulkOut').innerHTML = bulkHtml();
+  },
+  bulkSave: async () => {
+    const b = L.parseImport(ui.bulkText, state); // again against what is saved now, so a double tap adds nothing twice
+    if (b.error) { ui.bulk = b; $('#bulkOut').innerHTML = bulkHtml(); return; }
+    for (const st of ['incomes', 'obligations', 'receivables']) if (b[st].length) { await db.putMany(st, b[st]); state[st].push(...b[st]); }
+    const d = b.dups.incomes + b.dups.obligations + b.dups.receivables;
+    ui.bulk = null; ui.bulkText = '';
+    ui.bulkDone = `✅ انضاف ${b.incomes.length} دخل، ${b.obligations.length} التزام، ${b.receivables.length} إلك${d ? ` · تخطيت ${d} مكرر` : ''}`;
+    render(); toast('انضافوا ✓');
   },
   catUp: el => moveCat(el.dataset.id, -1),
   catDown: el => moveCat(el.dataset.id, 1),

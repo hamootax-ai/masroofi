@@ -188,3 +188,10 @@ details.adv[open] > summary { margin-bottom: 8px; }
 html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
 button, a, input, select, textarea, label { touch-action: manipulation; }
 .verbadge { text-align: center; color: var(--mute); font-size: .8rem; margin: 2px 0 6px; }
+
+/* v1.7: multi-day paste preview, receivables, bulk import */
+.daylist .item { padding: 10px 0; }
+.daylist .item .s.warn { color: var(--warn); white-space: normal; }
+#bulkText { min-height: 130px; font-size: .85rem; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.btn:disabled { opacity: .55; cursor: default; }
+.moneyseg button { padding: 0 3px; flex: 1 1 auto; } /* six tabs since "إلي": they fit a 390px phone at the default text size */

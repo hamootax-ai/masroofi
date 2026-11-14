@@ -62,6 +62,10 @@ export function dayLabel(s) { const d = parseYmd(s); return `${AR_DAYS[d.getDay(
 /** Short form where space is tight: "14 نوفمبر" (+ year if not this year) */
 export function dateShort(s) { if (!s) return ''; const d = parseYmd(s); return `${d.getDate()} ${AR_MONTHS[d.getMonth()]}${d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : ''}`; }
 
+// (v1.7) Arabic counting: 1 يوم واحد, 2 يومين, 3-10 أيام, 11+ يوم
+export const nDays = n => n === 1 ? 'يوم واحد' : n === 2 ? 'يومين' : n <= 10 ? `${n} أيام` : `${n} يوم`;
+export const nItems = n => n === 1 ? 'بند واحد' : n === 2 ? 'بندين' : n <= 10 ? `${n} بنود` : `${n} بند`;
+
 export function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }

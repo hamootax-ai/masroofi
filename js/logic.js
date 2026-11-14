@@ -1,5 +1,5 @@
 // Pure business logic: balances, month stats, card cycle, projection, advice, note parsing.
-import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, AR_MONTHS_LEVANT, uid, dateShort } from './util.js';
+import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, AR_MONTHS_LEVANT, uid, dateShort, nDays } from './util.js';
 
 export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير', none: 'ما تخصم من الحسابات' };
 // 'none' = opening entry: counts in day/month/category/rafah totals but never touches an account.
@@ -31,7 +31,7 @@ const KEYWORDS = {
   health: ['pharmacy', 'medicine', 'meds', 'doctor', 'clinic', 'hospital', 'lab', 'dentist', 'gym', 'vitamins', 'صيدلية', 'دوا', 'دواء', 'دكتور', 'طبيب', 'عيادة', 'مستشفى', 'مختبر', 'اسنان', 'جيم', 'نادي'],
   clothes: ['clothes', 'shirt', 'shoes', 'pants', 'jacket', 'ملابس', 'اواعي', 'أواعي', 'بوط', 'قميص', 'بنطلون', 'جاكيت'],
   home: ['home', 'house', 'cleaning', 'detergent', 'furniture', 'البيت', 'بيت', 'منظفات', 'تنظيف', 'اثاث'],
-  cats: ['cat', 'cats', 'vet', 'litter', 'cat food', 'قطط', 'قطة', 'بس', 'بيطري', 'رمل'],
+  cats: ['cat', 'cats', 'vet', 'litter', 'cat food', 'قطط', 'قطة', 'بيطري', 'رمل'], // (v1.7) not 'بس': in everyday Arabic it means "but/only", so ordinary sentences went to the cats
   car: ['car', 'oil change', 'tire', 'tyre', 'mechanic', 'car wash', 'service', 'parking', 'سيارة', 'السيارة', 'ميكانيكي', 'زيت', 'كوشوك', 'غسيل', 'صيانة', 'بنشر'],
   sadaqa: ['sadaqa', 'sadaka', 'charity', 'zakat', 'donation', 'صدقة', 'زكاة', 'تبرع'],
   debt: ['debt', 'loan', 'repay', 'installment', 'دين', 'ديون', 'سداد', 'قسط', 'سلفة'],
@@ -73,11 +73,12 @@ const CUR = '(?:jd|jod|دينار|د\\.?أ|دنانير)';
 
 function normDigits(s) { return s.replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/٫/g, '.'); }
 
-export function parseDateLine(line, refDate = today()) {
+/** pastOnly (v1.7, multi-day paste): a note is history, so a month after the current month is last year's, and an impossible date (Feb 31) is no date. */
+export function parseDateLine(line, refDate = today(), pastOnly = false) {
   const l = normDigits(line).trim().replace(/,/g, ' ').replace(/\s+/g, ' ');
   let month = -1, day = NaN, year = NaN;
   const words = l.toLowerCase().replace(/(\d)(st|nd|rd|th)\b/g, '$1').split(' ').filter(w => !/^(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?$/.test(w));
-  const isMonth = w => EN_MONTHS.findIndex(m => { const x = w.replace(/\.$/, ''); return x.length >= 3 && m.toLowerCase().startsWith(x); });
+  const isMonth = w => { const k = EN_MONTHS.findIndex(m => { const x = w.replace(/\.$/, ''); return x.length >= 3 && m.toLowerCase().startsWith(x); }); return k >= 0 || !pastOnly ? k : fuzzyMonth(w); };
   const mIdx = words.map(isMonth);
   if (mIdx.some(i => i >= 0)) {
     // English: only a month word plus numbers (day, optional year)
@@ -96,46 +97,222 @@ export function parseDateLine(line, refDate = today()) {
   const ref = parseYmd(refDate);
   if (isNaN(year)) {
     year = ref.getFullYear();
-    if (new Date(year, month, day) - ref > 31 * 86400000) year--; // a "December 30" note read in January
+    if (pastOnly ? month > ref.getMonth() : new Date(year, month, day) - ref > 31 * 86400000) year--; // a "December 30" note read in January
   }
+  if (pastOnly && new Date(year, month, day).getMonth() !== month) return null;
   return ymd(new Date(year, month, day));
 }
 
+// (v1.7) a typo'd English month in a long note ("Ocotber 5", "Novmber 9", "Marhc 4"): edit distance (a swap = 1) of 1 for short names, 2 for long, and only one month that close
+function editDist(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1); // swapped letters = 1
+  }
+  return d[a.length][b.length];
+}
+export function fuzzyMonth(word) {
+  const w = String(word || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (w.length < 4) return -1;
+  const hits = EN_MONTHS.map((m, i) => [i, editDist(w, m.toLowerCase()), m.length]).filter(([, dd, len]) => dd <= (len <= 5 ? 1 : 2));
+  if (!hits.length) return -1;
+  const best = Math.min(...hits.map(h => h[1]));
+  const top = hits.filter(h => h[1] === best);
+  return top.length === 1 ? top[0][0] : -1;
+}
+
+// (v1.7) "13/11", "13-11", "13/11/2025": day first, as dates are written here
+const NUM_DATE = /^(\d{1,2})\s*[/\-]\s*(\d{1,2})(?:\s*[/\-]\s*(\d{4}|\d{2}))?$/;
+export function parseNumDate(line, refDate = today(), pastOnly = false) {
+  const m = normDigits(String(line || '')).trim().match(NUM_DATE);
+  if (!m) return null;
+  const day = +m[1], month = +m[2] - 1;
+  let year = m[3] ? +m[3] : NaN;
+  if (year < 100) year += 2000;
+  if (month < 0 || month > 11 || day < 1 || day > 31) return null;
+  const ref = parseYmd(refDate);
+  if (isNaN(year)) {
+    year = ref.getFullYear();
+    if (pastOnly ? month > ref.getMonth() : new Date(year, month, day) - ref > 31 * 86400000) year--;
+  }
+  const d = new Date(year, month, day);
+  return d.getMonth() === month ? ymd(d) : null;
+}
+
 /** Parse his daily note. Returns {date, items:[{amount, text, cat, sub, rafah}], total, rafahTotal, warnings[]} */
-export function parseNote(text, categories, refDate = today()) {
+// opts.tolerant (v1.7 multi-day only): the date is already known, "+ income" lines are set aside, an amount in the middle
+// ("lunch 3 jd with friends") is read, a description in brackets loses them, and the Total/Rafaheyah checks are left to the caller.
+const INCOME_LINE = /^(plus\b|\+|i\s+receiv|receiv|got\s+\d|وصلني|وصلتني|استلمت|قبضت|اجاني|إجاني)|\+\s*$/i;
+export function parseNote(text, categories, refDate = today(), opts = {}) {
+  const T = !!opts.tolerant;
   const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   let date = null, total = null, rafahTotal = null;
-  const items = [], warnings = [], skipped = [];
+  const items = [], warnings = [], skipped = [], income = [];
   for (const raw of lines) {
     const line = normDigits(raw);
     if (/^(total|المجموع|مجموع|الاجمالي|الإجمالي)\b/i.test(line) || /total/i.test(line) || /\/\/\s*rafah/i.test(line)) {
       const tm = line.match(new RegExp(`(?:total|مجموع|المجموع|اجمالي|إجمالي)[^\\d]*${NUM}`, 'i'));
       if (tm) total = toFils(tm[1]);
+      else if (T) { const bm = line.match(new RegExp(`^[^\\d/]*${NUM}[^/]*//`)); if (bm) total = toFils(bm[1]); } // "40 JD // Rafaheyah 5 JD" (no "Total")
       const rm = line.match(new RegExp(`(?:rafah\\w*|رفاهي?ة)[^\\d]*${NUM}`, 'i'));
       if (rm) rafahTotal = toFils(rm[1]);
       continue;
     }
-    if (!date && !/\d+(?:[.,]\d+)?\s*(jd|jod)/i.test(line)) {
-      const d = parseDateLine(line, refDate);
+    if (!T && !date && !/\d+(?:[.,]\d+)?\s*(jd|jod)/i.test(line)) {
+      const d = parseDateLine(line, refDate) || parseNumDate(line, refDate); // (v1.7) "13/11" used to come out as a "13/" item of 11
       if (d) { date = d; continue; }
     }
+    if (T && INCOME_LINE.test(line)) { income.push(raw); continue; }
     let m = line.match(new RegExp(`^${CUR}?\\s*${NUM}\\s*${CUR}?\\s+(.+)$`, 'i'));
     let amount, desc;
     if (m) { amount = toFils(m[1]); desc = m[2]; }
     else if ((m = line.match(new RegExp(`^(.+?)\\s*[:\\-–]?\\s*${CUR}?\\s*${NUM}\\s*${CUR}?$`, 'i')))) { amount = toFils(m[2]); desc = m[1]; }
+    if (T && !desc) {
+      const mid = [...line.matchAll(new RegExp(`(^|\\s)${NUM}\\s*(?:jd|jod|دينار)(?=\\s|$)`, 'gi'))];
+      if (mid.length === 1) { amount = toFils(mid[0][2]); desc = (line.slice(0, mid[0].index) + ' ' + line.slice(mid[0].index + mid[0][0].length)).replace(/\s+/g, ' ').trim(); }
+    }
     if (!desc || !(amount > 0)) { skipped.push(raw); continue; }
     desc = desc.replace(/^[-–:•*]+\s*/, '').trim();
+    if (T) desc = desc.replace(/^\(\s*([^()]*?)\s*\)?$/, '$1') || desc; // "(coffee with friends)" and an unclosed "(bread and milk"
     const g = guessCategory(desc, categories);
     const cat = categories.find(c => c.id === g.cat);
     const rafah = /rafah|رفاهية/i.test(desc) ? true : !!cat?.rafah;
     items.push({ amount, text: desc, cat: g.cat, sub: g.sub, rafah: cat?.kind === 'sadaqa' ? false : rafah });
   }
   const sum = items.reduce((a, i) => a + i.amount, 0);
-  if (total != null && total !== sum) warnings.push(`المجموع بالملاحظة ${jd(total)} بس مجموع البنود ${jd(sum)}`);
+  if (!T && total != null && total !== sum) warnings.push(`المجموع بالملاحظة ${jd(total)} بس مجموع البنود ${jd(sum)}`);
   const rSum = items.filter(i => i.rafah).reduce((a, i) => a + i.amount, 0);
-  if (rafahTotal != null && rafahTotal !== rSum) warnings.push(`الرفاهية بالملاحظة ${jd(rafahTotal)} بس المحسوب ${jd(rSum)}`);
+  if (!T && rafahTotal != null && rafahTotal !== rSum) warnings.push(`الرفاهية بالملاحظة ${jd(rafahTotal)} بس المحسوب ${jd(rSum)}`);
+  if (income.length) warnings.push(`سطور دخل (مش مصروف) ما سجلتها: ${income.join(' / ')}`);
   if (skipped.length) warnings.push(`ما فهمت هالسطور: ${skipped.join(' / ')}`);
-  return { date: date || refDate, dateFound: !!date, items, total, rafahTotal, sum, warnings };
+  return { date: date || refDate, dateFound: !!date, items, total, rafahTotal, sum, warnings, skipped, income };
+}
+
+// ---------- Multi-day note (v1.7: months of days kept in ONE Apple Note) ----------
+/** The date a line opens, or null. Same rules as the single-day parser, plus "📅 Friday - March 3" style punctuation. */
+function dayHeader(raw, refDate) {
+  const line = normDigits(String(raw || '')).trim();
+  if (!line || /\d+(?:[.,]\d+)?\s*(jd|jod)/i.test(line) || /total|مجموع|اجمالي|إجمالي/i.test(line)) return null;
+  const numeric = parseNumDate(line, refDate, true);
+  if (numeric) return { date: numeric };
+  const clean = line.replace(/[^\p{L}\p{N}\s/]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const d = clean ? parseDateLine(clean, refDate, true) : null;
+  if (d) return { date: d };
+  // a month heading with no day ("March 2026 Expenses", "ملخص مارس"): its block is a summary, not a day
+  const words = clean.toLowerCase().split(' ');
+  const mi = words.map(w => { const k = EN_MONTHS.findIndex(m => w.length >= 3 && m.toLowerCase().startsWith(w)); return k >= 0 ? k : fuzzyMonth(w); });
+  let month = mi.find(k => k >= 0);
+  if (month == null) { const hit = AR_MONTH_ALIASES.find(([name]) => clean.includes(name)); if (hit) month = hit[1]; }
+  if (month == null) return null;
+  const rest = words.filter((w, k) => mi[k] < 0 && !AR_MONTH_ALIASES.some(([name]) => name.includes(w)));
+  if (!rest.every(w => /^\d{4}$/.test(w) || /^(expenses?|spending|summary|month|monthly|مصاريف|مصروف|مصروفات|ملخص|شهر)$/.test(w))) return null;
+  const y = rest.find(w => /^\d{4}$/.test(w));
+  return { summary: { month, year: y ? +y : null } };
+}
+
+/** Split a note into days at every date line: {days: [{date, header, lines[]}], pre: [lines before the first date]} */
+export function splitNoteDays(text, refDate = today()) {
+  const days = [], pre = [], summaries = [];
+  let cur = null;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const h = raw.trim() ? dayHeader(raw, refDate) : null;
+    if (h?.date) { cur = { date: h.date, header: raw.trim(), lines: [] }; days.push(cur); continue; }
+    if (h?.summary) { cur = { ...h.summary, summary: true, header: raw.trim(), lines: [] }; summaries.push(cur); continue; }
+    if (cur) cur.lines.push(raw); else if (raw.trim()) pre.push(raw.trim());
+  }
+  return { days, pre, summaries };
+}
+
+// his footers have 2 decimals while bills have 3 (12.345): a gap under half a piaster is rounding, not a mistake
+const ROUND_TOL = 5;
+const near = (a, b) => Math.abs(a - b) <= ROUND_TOL;
+/** The smallest set of item indexes whose amounts add up to target (exact first, then within rounding); null if none or a tie. */
+function subsetFor(items, target) {
+  const n = items.length;
+  if (!n || n > 14) return null;
+  for (const ok of [(t) => t === target, (t) => near(t, target)]) {
+    let best = null, bestSize = Infinity, tie = false;
+    for (let mask = 1; mask < 1 << n; mask++) {
+      let tot = 0, size = 0;
+      for (let k = 0; k < n; k++) if (mask & (1 << k)) { tot += items[k].amount; size++; }
+      if (!ok(tot)) continue;
+      if (size < bestSize) { best = mask; bestSize = size; tie = false; } else if (size === bestSize) tie = true;
+    }
+    if (best != null) return tie ? null : new Set([...Array(n).keys()].filter(k => best & (1 << k)));
+  }
+  return null;
+}
+
+/** Use a day's footer: "100jd fees+20" inside a line adds the 20 when that makes the Total match, and the per-DAY Rafaheyah picks its item(s). */
+function applyFooter(p, categories) {
+  if (p.total != null && !near(p.total, p.sum)) {
+    for (const it of p.items) {
+      const extra = [...it.text.matchAll(/\+\s*(\d+(?:[.,]\d+)?)/g)].reduce((a, m) => a + toFils(m[1]), 0);
+      if (extra > 0 && near(p.sum + extra, p.total)) { it.amount += extra; p.sum += extra; it.plusFixed = true; break; }
+    }
+  }
+  const isSadaqa = it => categories.find(c => c.id === it.cat)?.kind === 'sadaqa';
+  p.rafahMatched = null;
+  if (p.rafahTotal != null && p.items.length) {
+    if (p.rafahTotal === 0) { p.items.forEach(it => { it.rafah = false; }); p.rafahMatched = true; }
+    else {
+      const pool = p.items.map((it, k) => [it, k]).filter(([it]) => !isSadaqa(it));
+      const pick = subsetFor(pool.map(([it]) => it), p.rafahTotal);
+      const chosen = pick ? new Set([...pick].map(j => pool[j][1])) : new Set();
+      p.items.forEach((it, k) => { it.rafah = chosen.has(k); });
+      p.rafahMatched = !!pick;
+    }
+  }
+  p.totalOff = p.total != null && !near(p.total, p.sum);
+  const w = [];
+  if (p.totalOff) w.push(`المجموع بالملاحظة ${jd(p.total)} بس مجموع البنود ${jd(p.sum)}`);
+  if (p.rafahMatched === false) w.push(`الرفاهية بالملاحظة ${jd(p.rafahTotal)} لليوم، ما لقيت بنود مجموعها هيك، فما علّمت ولا بند رفاهية`);
+  p.warnings = [...w, ...p.warnings];
+  return p;
+}
+
+/** A note with 2+ date lines: every day goes through parseNote. Returns null for a one-day note (the old single-day flow handles it). */
+export function parseMultiNote(text, categories, refDate = today()) {
+  const { days, pre, summaries } = splitNoteDays(text, refDate);
+  if (days.length < 2) return null;
+  const out = days.map(d => {
+    const p = parseNote(d.lines.join('\n'), categories, d.date, { tolerant: true });
+    return applyFooter({ ...p, date: d.date, dateFound: true, header: d.header }, categories);
+  });
+  const dates = out.map(d => d.date).sort();
+  const warnings = [];
+  if (pre.length) warnings.push(`تجاهلت ${pre.length} ${pre.length === 1 ? 'سطر' : 'سطور'} قبل أول تاريخ: ${pre.slice(0, 3).join(' / ')}${pre.length > 3 ? ' …' : ''}`);
+  for (const sm of summaries) { // "March 2026 Expenses / Total 500": checked against the days, never imported
+    const tl = sm.lines.map(normDigits).find(l => /total|مجموع|اجمالي|إجمالي/i.test(l));
+    const tm = tl && tl.match(new RegExp(`(?:total|مجموع|المجموع|اجمالي|إجمالي)[^\\d]*${NUM}`, 'i'));
+    const ym = out.filter(d => +d.date.slice(5, 7) - 1 === sm.month && (!sm.year || +d.date.slice(0, 4) === sm.year));
+    const got = ym.reduce((a, d) => a + d.sum, 0);
+    const want = tm ? toFils(tm[1]) : null;
+    sm.total = want; sm.daysSum = got; sm.ok = want == null ? null : near(want, got);
+    warnings.push(`${want == null ? 'ℹ️' : sm.ok ? '✅' : '⚠️'} ملخص "${sm.header}" ما بينضاف كمصروف${want != null ? `: بالملاحظة ${jd(want)}، ومجموع أيامه هون ${jd(got)}` : ''}`);
+  }
+  const seen = new Set(), twice = new Set();
+  for (const d of dates) { if (seen.has(d)) twice.add(d); seen.add(d); }
+  if (twice.size) warnings.push(`في تاريخ مكرر بالملاحظة: ${[...twice].map(dateShort).join('، ')} (بنودهم كلها رح تنضاف)`);
+  const off = out.filter(d => d.totalOff).length;
+  if (off) warnings.push(`${nDays(off)}: المجموع بالملاحظة غير مجموع البنود (معلّم ⚠️ تحت)`);
+  return { multi: true, days: out, summaries, pre, from: dates[0], to: dates[dates.length - 1], count: out.reduce((a, d) => a + d.items.length, 0), sum: out.reduce((a, d) => a + d.sum, 0), warnings };
+}
+
+const normTxt = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+/** Items not saved yet (same date + amount + text = already there). Counted per copy, so two real "5jd coffee" on one day both go in. */
+export function dedupeDayItems(state, days) {
+  const have = new Map();
+  for (const e of state.entries) { const k = `${e.date}|${e.amount}|${normTxt(e.note)}`; have.set(k, (have.get(k) || 0) + 1); }
+  const add = [];
+  let skipped = 0;
+  for (const d of days) for (const it of d.items) {
+    const k = `${d.date}|${it.amount}|${normTxt(it.text)}`, n = have.get(k) || 0;
+    if (n > 0) { have.set(k, n - 1); skipped++; } else add.push({ ...it, date: d.date });
+  }
+  return { add, skipped };
 }
 
 /** Exactly his format: "November 13\n20jd groceries\n...\nTotal 33.15 JD // Rafaheyah 0 JD" */
@@ -284,6 +461,20 @@ export function obligationsUntil(state, X) {
   return { list: out.sort((a, b) => a.date.localeCompare(b.date)), noDate };
 }
 
+// ---------- Receivables "إلي عند الناس" (v1.7) ----------
+// {id, ts, who, amount (fils|null), amountText, due (YYYY-MM-DD|null), expected (text), sure, note, done, receivedTs, receivedDate, receivedAmount, account, incomeId}
+export const recvOpen = state => (state.receivables || []).filter(r => !r.done);
+export const recvLabel = r => r.amount > 0 ? jd(r.amount) : (r.amountText || 'بدون رقم');
+/** Only SURE ones with a number and a date on/before X count (in both cases); the rest are listed as not counted. */
+export function receivablesUntil(state, X) {
+  const list = [], notCounted = [];
+  for (const r of recvOpen(state)) {
+    if (r.sure && r.amount > 0 && r.due && r.due <= X) list.push({ id: r.id, who: r.who, amount: r.amount, date: r.due });
+    else if (!r.sure || !(r.amount > 0) || !r.due) notCounted.push({ id: r.id, who: r.who, label: recvLabel(r), why: !r.sure ? 'مش أكيد' : !(r.amount > 0) ? 'بدون رقم' : 'بدون تاريخ' });
+  }
+  return { list: list.sort((a, b) => a.date.localeCompare(b.date)), notCounted };
+}
+
 // ---------- Projection ----------
 export function projection(state, X, ref = today()) {
   const bal = balances(state);
@@ -296,8 +487,10 @@ export function projection(state, X, ref = today()) {
   const sureInc = sum(inc.filter(i => i.sure));
   const allInc = sum(inc);
   const oblTotal = sum(obl.list);
-  const base = bal.net - oblTotal - spendTotal;
-  return { X, days, months, liquidity: bal.net, incomes: inc, sureInc, allInc, obligations: obl.list, noDate: obl.noDate, oblTotal, spendAvg: spend.avg, spendBasis: spend.basis, spendTotal, worst: base + sureInc, best: base + allInc };
+  const recv = receivablesUntil(state, X);
+  const recvTotal = sum(recv.list);
+  const base = bal.net - oblTotal - spendTotal + recvTotal;
+  return { X, days, months, liquidity: bal.net, incomes: inc, sureInc, allInc, obligations: obl.list, noDate: obl.noDate, oblTotal, recv: recv.list, recvTotal, recvNotCounted: recv.notCounted, spendAvg: spend.avg, spendBasis: spend.basis, spendTotal, worst: base + sureInc, best: base + allInc };
 }
 
 // ---------- Advice ----------
@@ -404,4 +597,84 @@ export function payObligation(o, account, amount, ts = Date.now()) {
     if (o.monthly) next = { ...o, id: uid(), ts, payments: [], done: false, due: o.due ? addMonthsDate(o.due, 1) : null };
   }
   return { upd, next };
+}
+
+// ---------- Bulk import (v1.7): a pasted JSON block that ADDS incomes / obligations / receivables (schema: README "استيراد بيانات") ----------
+const isYmd = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && ymd(parseYmd(v)) === v;
+const jdIn = v => typeof v === 'number' ? (isFinite(v) ? Math.round(v * 1000) : NaN) : typeof v === 'string' && /^\s*[\d٠-٩]+(?:[.,٫][\d٠-٩]+)?\s*(jd|jod|دينار)?\s*$/i.test(v) ? toFils(v) : NaN;
+const keyTxt = v => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+const incKey = i => `${keyTxt(i.source)}|${i.amount}|${i.date}`;
+const oblKey = o => `${keyTxt(o.title)}|${o.amount}|${o.due || ''}`;
+const recKey = r => `${keyTxt(r.who)}|${r.amount ?? ''}|${keyTxt(r.amountText)}|${r.due || ''}|${keyTxt(r.expected)}`;
+export const RECURS = ['none', 'monthly', 'yearly', 'months'];
+export const PRIORITIES = ['high', 'mid', 'low'];
+
+/** Returns {error} or {incomes, obligations, receivables (records ready to save), dups, errors[]}. Nothing is saved here. */
+export function parseImport(text, state, ts = Date.now()) {
+  let src = String(text || '').trim().replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim();
+  let data;
+  try { data = JSON.parse(src); } catch (e) { return { error: `الـ JSON مش صحيح: ${e.message}` }; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { error: 'لازم يكون كائن JSON فيه incomes / obligations / receivables' };
+  const out = { incomes: [], obligations: [], receivables: [], dups: { incomes: 0, obligations: 0, receivables: 0 }, errors: [] };
+  const seen = {
+    incomes: new Set((state.incomes || []).map(incKey)),
+    obligations: new Set((state.obligations || []).map(oblKey)),
+    receivables: new Set((state.receivables || []).map(recKey)),
+  };
+  const err = (kind, k, msg) => out.errors.push(`${kind} #${k + 1}: ${msg}`);
+  const list = v => Array.isArray(v) ? v : v == null ? [] : null;
+  let n = 0;
+  const L1 = list(data.incomes), L2 = list(data.obligations), L3 = list(data.receivables);
+  if (!L1 || !L2 || !L3) return { error: 'incomes و obligations و receivables لازم يكونوا قوائم [ ... ]' };
+  if (!L1.length && !L2.length && !L3.length) return { error: 'ما لقيت ولا شي: حط incomes أو obligations أو receivables' };
+
+  L1.forEach((x, k) => {
+    if (!x || typeof x !== 'object') return err('دخل', k, 'مش كائن');
+    const source = String(x.source ?? '').trim(), amount = jdIn(x.amount), recur = x.recur ?? 'none';
+    const months = Array.isArray(x.months) ? [...new Set(x.months.map(Number))].filter(m => m >= 1 && m <= 12).sort((a, b) => a - b) : [];
+    if (!source) return err('دخل', k, 'source فاضي');
+    if (!(amount > 0)) return err('دخل', k, 'amount لازم رقم أكبر من 0 بالدينار');
+    if (x.date != null && !isYmd(x.date)) return err('دخل', k, 'date لازم YYYY-MM-DD');
+    if (!RECURS.includes(recur)) return err('دخل', k, `recur لازم وحدة من: ${RECURS.join(' / ')}`);
+    if (recur === 'months' && !months.length) return err('دخل', k, 'recur "months" بدها months: [1..12]');
+    const rec = { id: uid(), ts: ts + n++, status: 'expected', source, amount, date: x.date || today(), recur, months: recur === 'months' ? months : [], sure: x.sure !== false };
+    if (seen.incomes.has(incKey(rec))) { out.dups.incomes++; return; }
+    seen.incomes.add(incKey(rec)); out.incomes.push(rec);
+  });
+
+  L2.forEach((x, k) => {
+    if (!x || typeof x !== 'object') return err('التزام', k, 'مش كائن');
+    const title = String(x.title ?? '').trim(), amount = jdIn(x.amount), priority = x.priority ?? 'mid';
+    const paid = x.paid == null || x.paid === 0 ? 0 : jdIn(x.paid);
+    if (!title) return err('التزام', k, 'title فاضي');
+    if (!(amount > 0)) return err('التزام', k, 'amount لازم رقم أكبر من 0 بالدينار');
+    if (x.due != null && x.due !== '' && !isYmd(x.due)) return err('التزام', k, 'due لازم YYYY-MM-DD أو null');
+    if (!PRIORITIES.includes(priority)) return err('التزام', k, `priority لازم وحدة من: ${PRIORITIES.join(' / ')}`);
+    if (!(paid >= 0)) return err('التزام', k, 'paid لازم رقم بالدينار');
+    let rec = { id: uid(), ts: ts + n++, payments: [], done: false, title, amount, due: x.due || null, priority, monthly: !!x.monthly };
+    if (seen.obligations.has(oblKey(rec))) { out.dups.obligations++; return; }
+    seen.obligations.add(oblKey(rec));
+    if (paid > 0) { // already paid before the app: a payment that touches no account
+      const r = payObligation(rec, 'none', Math.min(paid, amount), rec.ts);
+      rec = r.upd; rec.payments[0].note = 'مدفوع قبل التطبيق';
+      out.obligations.push(rec); if (r.next) out.obligations.push(r.next);
+      return;
+    }
+    out.obligations.push(rec);
+  });
+
+  L3.forEach((x, k) => {
+    if (!x || typeof x !== 'object') return err('إلك', k, 'مش كائن');
+    const who = String(x.who ?? '').trim();
+    if (!who) return err('إلك', k, 'who فاضي');
+    let amount = x.amount == null || x.amount === '' ? null : jdIn(x.amount), amountText = String(x.amountText ?? '').trim();
+    if (amount != null && !(amount > 0)) { amountText = amountText || String(x.amount).trim(); amount = null; } // "100-150" in amount -> text
+    let due = x.due ?? null, expected = String(x.expected ?? '').trim();
+    if (due != null && due !== '' && !isYmd(due)) return err('إلك', k, 'due لازم YYYY-MM-DD');
+    if (!due && isYmd(expected)) { due = expected; expected = ''; }
+    const rec = { id: uid(), ts: ts + n++, who, amount, amountText: amount ? '' : amountText, due: due || null, expected, sure: x.sure === true, note: String(x.note ?? '').trim(), done: false };
+    if (seen.receivables.has(recKey(rec))) { out.dups.receivables++; return; }
+    seen.receivables.add(recKey(rec)); out.receivables.push(rec);
+  });
+  return out;
 }
