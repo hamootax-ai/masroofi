@@ -1,5 +1,5 @@
 // Pure business logic: balances, month stats, card cycle, projection, advice, note parsing.
-import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, uid, dateShort } from './util.js';
+import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, AR_MONTHS_LEVANT, uid, dateShort } from './util.js';
 
 export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير', none: 'ما تخصم من الحسابات' };
 // 'none' = opening entry: counts in day/month/category/rafah totals but never touches an account.
@@ -66,7 +66,7 @@ function guessSub(cat, t) {
 }
 
 // ---------- Note parsing ----------
-const AR_MONTH_ALIASES = [...AR_MONTHS.map((m, i) => [m, i]), ...['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'].map((m, i) => [m, i]), ['اذار', 2], ['ايار', 4], ['ابريل', 3], ['اكتوبر', 9], ['اغسطس', 7]];
+const AR_MONTH_ALIASES = [...AR_MONTHS.map((m, i) => [m, i]), ...AR_MONTHS_LEVANT.map((m, i) => [m, i]), ['اذار', 2], ['ايار', 4], ['ابريل', 3], ['اكتوبر', 9], ['اغسطس', 7]];
 AR_MONTH_ALIASES.sort((a, b) => b[0].length - a[0].length);
 const NUM = '(\\d+(?:[.,]\\d+)?)';
 const CUR = '(?:jd|jod|دينار|د\\.?أ|دنانير)';
