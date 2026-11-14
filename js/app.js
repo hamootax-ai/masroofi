@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.5.1';
+export const APP_VERSION = '1.5.2';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -1230,7 +1230,10 @@ async function boot() {
     const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').then(reg => reg.update?.()).catch(() => {});
     let reloaded = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+    // (2026-11-14, Ahmad: "ما بتقدر تعملها مرة و خلص") ONE open is enough: the new version installs, takes over and the page reloads by itself
+    // within a few seconds; a toast then says it updated (and which version), so there is no need to reopen
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; try { sessionStorage.setItem('justUpdated', '1'); } catch {} location.reload(); } });
+    try { if (sessionStorage.getItem('justUpdated')) { sessionStorage.removeItem('justUpdated'); toast('✅ تحدّث التطبيق: v' + APP_VERSION); } } catch {}
   }
 }
 window.__masroofi = { state, ui, L, C, render, go, sendChat, pullInbox }; // debugging/tests
