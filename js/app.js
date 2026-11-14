@@ -2,8 +2,9 @@ import * as db from './db.js';
 import { uid, toFils, jd, jdShort, today, thisMonth, addMonths, monthLabel, dayLabel, dateShort, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS } from './util.js';
 import * as L from './logic.js';
 import * as C from './claude.js';
+import * as SMS from './sms.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
@@ -90,19 +91,20 @@ function sortedCats() {
 }
 
 // ---------------- Views ----------------
-const TITLES = { add: 'مصروفي', day: 'اليوم', month: 'الشهر', money: 'فلوسي', ask: 'اسأل كلاود', settings: 'الإعدادات' };
+const TITLES = { add: 'مصروفي', day: 'اليوم', month: 'الشهر', money: 'فلوسي', ask: 'اسأل كلاود', settings: 'الإعدادات', sms: 'رسائل البنك' };
 
 function render() {
   const v = ui.view;
   $('#title').textContent = TITLES[v];
   const hb = $('#hdrBtn');
-  if (v === 'settings') { hb.dataset.act = 'back'; delete hb.dataset.v; hb.innerHTML = '→ رجوع'; hb.setAttribute('aria-label', 'رجوع'); hb.classList.add('back'); }
+  if (v === 'settings' || v === 'sms') { hb.dataset.act = 'back'; delete hb.dataset.v; hb.innerHTML = '→ رجوع'; hb.setAttribute('aria-label', 'رجوع'); hb.classList.add('back'); }
   else { hb.dataset.act = 'go'; hb.dataset.v = 'settings'; hb.innerHTML = '⚙️'; hb.setAttribute('aria-label', 'الإعدادات'); hb.classList.remove('back'); }
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   $('#view').innerHTML = VIEWS[v]();
   AFTER[v]?.();
 }
-function go(v) { if (v === 'settings' && ui.view !== 'settings') ui.prevView = ui.view; ui.view = v; render(); window.scrollTo(0, 0); }
+const SUB = ['settings', 'sms'];
+function go(v) { if (SUB.includes(v) && !SUB.includes(ui.view)) ui.prevView = ui.view; ui.view = v; render(); window.scrollTo(0, 0); }
 
 /** Backup reminder level: never exported = yellow, red once there's been data for 3+ days; exported = ok, yellow after 7 days. */
 function backupStatus() {
@@ -156,6 +158,7 @@ VIEWS.add = () => {
     <label class="field toggle" style="margin-top:28px"><span>رفاهية</span><input id="qaRafah" type="checkbox" ${q.rafah ? 'checked' : ''} ${cat?.kind === 'sadaqa' ? 'disabled' : ''}></label></div>
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
+  <button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك</button>
   <details class="card" id="pasteBox" ${ui.parsed ? 'open' : ''}>
     <summary>📋 الصق ملاحظة اليوم</summary>
     <textarea id="noteText" placeholder="November 13&#10;20jd groceries&#10;13.15 gasoline&#10;Total 33.15 JD // Rafaheyah 0 JD" dir="auto">${esc(ui.noteText || '')}</textarea>
@@ -199,9 +202,9 @@ function readParsedEdits() {
   });
 }
 
-async function addEntry({ amount, cat, sub = '', note = '', from = 'cash', date = today(), rafah }) {
+async function addEntry({ amount, cat, sub = '', note = '', from = 'cash', date = today(), rafah, extra = {} }) {
   const c = L.catById(state, cat);
-  const e = { id: uid(), ts: Date.now(), date, amount, cat, sub, note: note.trim(), from, rafah: c?.kind === 'sadaqa' ? false : (rafah ?? !!c?.rafah) };
+  const e = { id: uid(), ts: Date.now(), date, amount, cat, sub, note: note.trim(), from, rafah: c?.kind === 'sadaqa' ? false : (rafah ?? !!c?.rafah), ...extra };
   await saveRec('entries', e);
   return e;
 }
@@ -446,6 +449,185 @@ function findCatByName(name) {
   return cats.find(c => c.name.toLowerCase() === n) || cats.find(c => n && (c.name.toLowerCase().includes(n) || n.includes(c.name.toLowerCase()))) || cats.find(c => c.id === L.guessCategory(n, cats).cat);
 }
 
+
+// ----- Bank SMS import -----
+const KIND_LABEL = { deposit: 'إيداع بالتوفير', bill: 'دفع فاتورة', cliq: 'تحويل كليك', atm: 'سحب نقدي', card_debit: 'مشتريات بالبطاقة', card_credit: 'دفعة/مرتجع على البطاقة', unknown: 'رسالة مش معروفة' };
+const ACTIONS = {
+  deposit: [['income', 'دخل (من مصدر)'], ['transfer', 'كاش حطيته بالتوفير (تحويل)']],
+  cliq: [['expense', 'مصروف'], ['debt', 'سداد دين/التزام'], ['out', 'تحويل لحدا (مش مصروف)']],
+  card_credit: [['transfer', 'سداد من التوفير (تحويل)'], ['balance', 'بس حدّث رصيد البطاقة']],
+  unknown: [['skip', 'تجاهل'], ['expense', 'سجّل مصروف']],
+};
+function smsSeen() { return state.kv.smsSeen || {}; }
+
+/** Pair new items with entries saved by earlier imports (bill now, card SMS before - or the other way). */
+function crossMerge(items) {
+  for (const it of items) {
+    if (it.kind === 'card_debit' && it.viaHousing && !it.mergedInto) {
+      const e = state.entries.find(x => x.smsKind === 'bill' && !x.smsCard && x.from === 'card' && x.amount === it.amount);
+      if (e) { it.mergedInto = 'entry:' + e.id; it.mergedEntry = e.id; }
+    }
+    if (it.kind === 'bill' && !it.cardMatched) {
+      const e = state.entries.find(x => x.smsKind === 'card_debit' && x.smsHousing && !x.smsBill && x.amount === it.amount);
+      if (e) { it.cardMatched = true; it.updateEntry = e.id; it.account = 'card'; }
+    }
+  }
+  return items;
+}
+
+function defaultAction(it) {
+  if (it.kind === 'deposit') return it.viaAtm ? 'transfer' : 'income';
+  if (it.kind === 'cliq') return 'expense';
+  if (it.kind === 'card_credit') return 'transfer';
+  if (it.kind === 'unknown') return it.amount > 0 ? 'expense' : 'skip';
+  return 'expense';
+}
+
+function smsParse(text) {
+  const r = SMS.parseBatch(text, state.kv.categories, smsSeen());
+  crossMerge(r.items);
+  for (const it of r.items) { it.action = defaultAction(it); it.include = !it.mergedInto && !(it.kind === 'unknown' && !it.amount); it.date = it.date || today(); it.note = it.kind === 'bill' ? it.biller : it.kind === 'card_debit' || it.kind === 'card_credit' ? it.merchant : it.kind === 'deposit' ? it.source : it.kind === 'cliq' ? 'كليك' : it.kind === 'atm' ? 'سحب نقدي' : ''; if (!it.cat) it.cat = 'other'; }
+  ui.sms = r;
+}
+
+function smsItemHtml(it, i) {
+  const merged = it.mergedInto;
+  const showCat = ['bill', 'card_debit'].includes(it.kind) || (it.kind === 'cliq' && it.action === 'expense') || (it.kind === 'unknown' && it.action === 'expense');
+  const showAcc = ['bill', 'card_debit'].includes(it.kind) || (it.kind === 'unknown' && it.action === 'expense');
+  const openObl = state.obligations.filter(o => !o.done);
+  return `<div class="card smsitem ${merged ? 'merged' : ''}" data-i="${i}">
+    <div class="row" style="justify-content:space-between"><b>${KIND_LABEL[it.kind]}</b>${merged ? '' : `<label class="toggle" style="flex:none;min-height:36px;gap:6px"><span class="sub">سجّل</span><input type="checkbox" class="sInc" ${it.include ? 'checked' : ''}></label>`}</div>
+    <div class="sub smsraw" dir="auto">${esc(it.raw)}</div>
+    ${merged ? `<div class="banner blue">🔗 هاي رسالة البطاقة تبعت فاتورة، اندمجت معها كمصروف واحد (ما رح تنخصم مرتين).</div>` : `
+    ${it.kind === 'bill' ? `<div class="sub">${esc(it.biller)}: ${jd(it.billAmount)} + عمولة ${jd(it.fee)} = <b class="amt">${jd(it.amount)}</b>${it.cardMatched ? ' · <span class="pill good">انطابقت مع رسالة البطاقة</span>' : ' · <span class="pill warn">ما لقيت رسالة البطاقة، اختار الحساب</span>'}</div>` : ''}
+    ${ACTIONS[it.kind] ? `<label class="field"><span>شو هاي؟</span><select class="sAction">${ACTIONS[it.kind].map(([v, l]) => `<option value="${v}" ${v === it.action ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
+    <div class="row"><label class="field"><span>المبلغ</span><input type="text" inputmode="decimal" class="sAmt amt" value="${jd(it.amount)}"></label>
+    <div class="field"><span>التاريخ</span>${dateField('sDate' + i, it.date)}</div></div>
+    ${showCat ? `<div class="row"><label class="field"><span>التصنيف</span><select class="sCat">${catOptions(it.cat)}</select></label>${showAcc ? `<label class="field"><span>من</span><select class="sAcc">${accOptions(it.account, ['card', 'savings', 'cash', 'none'])}</select></label>` : ''}</div>` : ''}
+    ${it.kind === 'cliq' && it.action === 'debt' ? `<label class="field"><span>على أي التزام؟</span><select class="sObl">${openObl.length ? openObl.map(o => `<option value="${o.id}">${esc(o.title)} (${jd(L.remaining(o))})</option>`).join('') : '<option value="">ما في التزامات، ضيف واحد أول</option>'}</select></label>` : ''}
+    ${it.kind === 'atm' ? '<div class="sub">تحويل من التوفير للكاش.</div>' : ''}
+    <label class="field"><span>${it.kind === 'deposit' ? 'المصدر' : 'ملاحظة'}</span><input type="text" class="sNote" value="${esc(it.note || '')}"></label>`}
+  </div>`;
+}
+
+function smsBalancesPreview(r) {
+  const items = r.items;
+  const sv = items.filter(i => i.balance != null).sort((a, b) => (a.at || 0) - (b.at || 0)).pop();
+  const cd = [...items].reverse().find(i => i.available != null);
+  const lim = state.kv.accounts.card.limit || 0;
+  let html = '';
+  if (sv) html += `<div class="kv"><span>رصيد التوفير من آخر رسالة</span><span class="amt" id="smsSavBal">${jd(sv.balance)}</span></div>`;
+  if (cd) {
+    html += lim ? `<div class="kv"><span>المطلوب على البطاقة (الحد − المتاح ${jd(cd.available)})</span><span class="amt" id="smsCardOut">${jd(lim - cd.available)}</span></div>`
+      : `<label class="field"><span>حد البطاقة (مرة وحدة، عشان أحسب المطلوب من "Available balance")</span><input id="smsLimit" type="text" inputmode="decimal" class="amt" placeholder="0.000"></label>`;
+  }
+  return html ? `<div class="card"><h2 style="margin-top:0">الأرصدة</h2>${html}<label class="toggle"><span>حدّث الأرصدة من الرسائل</span><input type="checkbox" id="smsBal" checked></label><div class="sub">الرصيد الحقيقي من البنك بيحل محل التقدير.</div></div>` : '';
+}
+
+VIEWS.sms = () => {
+  const r = ui.sms;
+  return `<details class="card" id="smsHelp" ${ui.smsHelp ? 'open' : ''}><summary>❓ كيف أخلي الرسائل توصل لحالها؟ (اختصارات آيفون)</summary>
+    <ol class="steps">
+      <li>افتح تطبيق <b>الاختصارات (Shortcuts)</b> ← تبويب <b>الأتمتة (Automation)</b> تحت.</li>
+      <li>اضغط <b>+</b> ← اختار <b>الرسالة (Message)</b>.</li>
+      <li>عند <b>المرسل (Sender)</b> اختار <span class="amt">HousingBank</span> (بعدين اعمل أتمتة تانية لـ <span class="amt">Iskan CrCrd</span>).</li>
+      <li>اختار <b>تشغيل فوري (Run Immediately)</b> ← التالي.</li>
+      <li>ضيف إجراء <b>إلحاق بملف نصي (Append to Text File)</b>.</li>
+      <li>بالنص حط: متغير <b>الرسالة (Shortcut Input / Message)</b>، بعدها سطر جديد، وبعدها <span class="amt">----</span></li>
+      <li>الملف: <span class="amt">iCloud Drive/Shortcuts/masroofi_sms.txt</span> وفعّل "إنشاء إذا مش موجود".</li>
+      <li>كل كم يوم: افتح مصروفي ← رسائل البنك ← <b>استورد ملف الرسائل</b> واختار الملف.</li>
+    </ol>
+    <div class="sub">الرسائل اللي انستوردت قبل ما بتنعاد حتى لو ضلت بالملف. مصاريف الكاش سجّلها بإيدك من "سجّل" واختار كاش، البنك ما بيعرف عنها.</div>
+  </details>
+  <div class="card">
+    <textarea id="smsText" dir="auto" placeholder="الصق رسالة أو أكثر من البنك هون">${esc(ui.smsText || '')}</textarea>
+    <div class="btns"><button class="btn pri" data-act="smsParse">حلّل</button><label class="btn" style="cursor:pointer">📂 استورد ملف الرسائل<input id="smsFile" type="file" accept=".txt,text/plain" hidden></label></div>
+  </div>
+  ${r ? `${r.dups ? `<div class="banner blue" id="smsDups">↩️ ${r.dups} ${r.dups === 1 ? 'رسالة' : 'رسائل'} انستوردت قبل، تجاهلتها.</div>` : ''}
+    ${r.items.length ? `${smsBalancesPreview(r)}<div id="smsList">${r.items.map(smsItemHtml).join('')}</div><button class="btn pri" data-act="smsApply" id="smsApplyBtn">سجّل المختار</button>` : '<div class="banner yellow">ما في رسائل جديدة.</div>'}` : ''}
+  ${ui.smsDone ? `<div class="banner blue" id="smsDone">${ui.smsDone}</div>` : ''}`;
+};
+AFTER.sms = () => {
+  $('#smsText').addEventListener('input', e => { ui.smsText = e.target.value; });
+  $('#smsHelp').addEventListener('toggle', e => { ui.smsHelp = e.target.open; });
+  $('#smsFile').addEventListener('change', async e => {
+    const f = e.target.files?.[0]; e.target.value = ''; if (!f) return;
+    ui.smsDone = ''; smsParse(await f.text()); ui.smsFromFile = true; render();
+  });
+  $$('#smsList .sAction').forEach(sel => sel.addEventListener('change', () => { readSmsEdits(); render(); }));
+};
+
+function readSmsEdits() {
+  const r = ui.sms; if (!r) return;
+  $$('#smsList .smsitem').forEach(card => {
+    const it = r.items[+card.dataset.i]; if (it.mergedInto) return;
+    const q = c => card.querySelector(c);
+    if (q('.sInc')) it.include = q('.sInc').checked;
+    if (q('.sAction')) it.action = q('.sAction').value;
+    if (q('.sAmt')) it.amount = toFils(q('.sAmt').value);
+    if (q('#sDate' + card.dataset.i)) it.date = q('#sDate' + card.dataset.i).value || it.date;
+    if (q('.sCat')) it.cat = q('.sCat').value;
+    if (q('.sAcc')) it.account = q('.sAcc').value;
+    if (q('.sObl')) it.obl = q('.sObl').value;
+    if (q('.sNote')) it.note = q('.sNote').value.trim();
+  });
+}
+
+async function smsApply() {
+  readSmsEdits();
+  const r = ui.sms; if (!r) return;
+  const bad = r.items.find(it => it.include && !it.mergedInto && it.action !== 'skip' && !(it.amount > 0));
+  if (bad) return toast('في مبلغ غلط');
+  const limIn = $('#smsLimit');
+  if (limIn && limIn.value.trim()) { const lim = toFils(limIn.value); if (lim > 0) await setKV('accounts', { ...state.kv.accounts, card: { ...state.kv.accounts.card, limit: lim } }); }
+  let n = 0;
+  for (const it of r.items) {
+    if (it.mergedInto) {
+      if (it.mergedEntry) { const e = state.entries.find(x => x.id === it.mergedEntry); if (e) await saveRec('entries', { ...e, smsCard: it.hash }); }
+      continue;
+    }
+    if (!it.include || it.action === 'skip') continue;
+    const marks = { sms: it.hash, smsKind: it.kind };
+    if (it.kind === 'bill') {
+      marks.smsCard = it.cardHash || null;
+      if (it.updateEntry) { const e = state.entries.find(x => x.id === it.updateEntry); if (e) { await saveRec('entries', { ...e, cat: it.cat, sub: it.sub, note: it.note, smsBill: it.hash }); n++; continue; } }
+      await addEntry({ amount: it.amount, cat: it.cat, sub: it.sub, note: it.note, from: it.account, date: it.date, extra: marks }); n++;
+    } else if (it.kind === 'card_debit' || (it.kind === 'unknown' && it.action === 'expense') || (it.kind === 'cliq' && it.action === 'expense')) {
+      if (it.kind === 'card_debit' && it.viaHousing) marks.smsHousing = true;
+      await addEntry({ amount: it.amount, cat: it.cat, sub: it.sub || '', note: it.note, from: it.kind === 'cliq' ? 'savings' : it.account, date: it.date, extra: marks }); n++;
+    } else if (it.kind === 'cliq' && it.action === 'debt') {
+      const o = state.obligations.find(x => x.id === it.obl);
+      if (o) { const { upd, next } = L.payObligation(o, 'savings', it.amount); await saveRec('obligations', upd); if (next) await saveRec('obligations', next); n++; }
+    } else if (it.kind === 'deposit' && it.action === 'income') {
+      await saveRec('incomes', { id: uid(), ts: Date.now(), source: it.note || 'إيداع', amount: it.amount, date: it.date, status: 'received', recur: 'none', months: [], sure: true, account: 'savings', receivedAmount: it.amount, receivedTs: Date.now(), receivedDate: it.date, sms: it.hash }); n++;
+    } else if (it.kind === 'deposit' && it.action === 'transfer') {
+      await saveRec('transfers', { id: uid(), ts: Date.now(), date: it.date, from: 'cash', to: 'savings', amount: it.amount, note: 'إيداع كاش', sms: it.hash }); n++;
+    } else if (it.kind === 'atm') {
+      await saveRec('transfers', { id: uid(), ts: Date.now(), date: it.date, from: 'savings', to: 'cash', amount: it.amount, note: 'سحب نقدي', sms: it.hash }); n++;
+    } else if (it.kind === 'card_credit' && it.action === 'transfer') {
+      await saveRec('transfers', { id: uid(), ts: Date.now(), date: it.date, from: 'savings', to: 'card', amount: it.amount, note: 'سداد البطاقة', sms: it.hash }); n++;
+    } else if (it.kind === 'cliq' && it.action === 'out') n++;
+  }
+  // balances: the bank's real numbers replace the estimates (records above have older timestamps, so nothing counts twice)
+  const msgs = [];
+  if ($('#smsBal')?.checked !== false) {
+    const accs = structuredClone(state.kv.accounts);
+    const at = Date.now() + 1;
+    const sv = r.items.filter(i => i.balance != null).sort((a, b) => (a.at || 0) - (b.at || 0)).pop();
+    if (sv && !(accs.savings.smsAt && sv.at && sv.at < accs.savings.smsAt)) { accs.savings.base = sv.balance; accs.savings.baseTs = at; accs.savings.smsAt = sv.at || null; msgs.push(`التوفير صار ${jd(sv.balance)}`); }
+    const cd = [...r.items].reverse().find(i => i.available != null);
+    if (cd && accs.card.limit) { accs.card.base = Math.max(0, accs.card.limit - cd.available); accs.card.baseTs = at; msgs.push(`المطلوب على البطاقة ${jd(accs.card.base)}`); }
+    else if (cd) msgs.push('حط حد البطاقة عشان أحدّث المطلوب عليها');
+    await setKV('accounts', accs);
+  }
+  const seen = { ...smsSeen() };
+  for (const it of r.items) { seen[it.hash] = Date.now(); if (it.refKey) seen[it.refKey] = Date.now(); }
+  await setKV('smsSeen', seen);
+  ui.smsDone = `✓ انسجل ${n}. ${msgs.join('، ')}${ui.smsFromFile ? '<br>الرسائل اللي بالملف صارت محفوظة عندي، إذا استوردت نفس الملف مرة تانية ما رح تنعاد. فيك تفضّي الملف من تطبيق الملفات إذا بدك.' : ''}`;
+  ui.sms = null; ui.smsText = ''; ui.smsFromFile = false;
+  render(); toast(`انسجل ${n} ✓`);
+}
+
 // ----- Settings -----
 VIEWS.settings = () => {
   const s = settings();
@@ -479,6 +661,8 @@ VIEWS.settings = () => {
       <label>النوع <select class="cKind" style="min-height:36px;padding:4px;width:auto"><option value="need" ${c.kind === 'need' ? 'selected' : ''}>ضروري</option><option value="judge" ${c.kind === 'judge' ? 'selected' : ''}>بنحكم عليه</option><option value="sadaqa" ${c.kind === 'sadaqa' ? 'selected' : ''}>صدقة (ما بنحكم)</option></select></label>
       <input type="text" class="cSubs" value="${esc((c.subs || []).join('، '))}" placeholder="تفاصيل مفصولة بفاصلة (اختياري)"></div></div>`).join('')}</div>
     <div class="btns"><button class="btn" data-act="catAdd">➕ تصنيف</button><button class="btn pri" data-act="catSave">احفظ التصنيفات</button></div></div>
+
+  <h2>📩 رسائل البنك</h2><div class="card"><button class="btn" data-act="go" data-v="sms">استورد رسائل البنك</button></div>
 
   <h2>💾 نسخة احتياطية</h2><div class="card">
     <div class="sub">آخر نسخة: ${state.kv.lastBackup ? dayLabel(ymd(new Date(state.kv.lastBackup))) : 'ولا مرة'}</div>
@@ -607,7 +791,9 @@ function showGuide() {
 // ---------------- Actions ----------------
 const ACT = {
   go: el => go(el.dataset.v),
-  back: () => go(ui.prevView && ui.prevView !== 'settings' ? ui.prevView : 'add'),
+  smsParse: () => { ui.smsText = $('#smsText').value; ui.smsDone = ''; smsParse(ui.smsText); ui.smsFromFile = false; render(); },
+  smsApply: () => smsApply(),
+  back: () => go(ui.prevView && !SUB.includes(ui.prevView) ? ui.prevView : 'add'),
   toggleDeep: el => { ui.deep = !ui.deep; el.classList.toggle('on', ui.deep); el.setAttribute('aria-pressed', ui.deep); },
   seg: el => {
     const name = el.dataset.name, val = el.dataset.val;

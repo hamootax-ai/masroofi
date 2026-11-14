@@ -162,3 +162,8 @@ nav.tabs button span svg { display: block; }
 .minirow b.bk-yellow, .bk-yellow { color: var(--warn); } .minirow b.bk-red, .bk-red { color: var(--bad); } .bk-ok { color: var(--text); }
 .chip.deep { min-height: 40px; }
 .nw { white-space: nowrap; }
+
+.smsraw { background: var(--bg2); border-radius: 10px; padding: 8px 10px; margin: 6px 0; line-height: 1.5; font-size: .8rem; overflow-wrap: anywhere; }
+.smsitem.merged { opacity: .75; }
+.steps { padding-right: 20px; line-height: 1.8; }
+#smsBtn { margin: 10px 0; }
