@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.7.1';
+export const APP_VERSION = '1.8.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -40,7 +40,8 @@ const $$ = s => [...document.querySelectorAll(s)];
 
 // ---------------- State ----------------
 const state = { entries: [], transfers: [], incomes: [], obligations: [], receivables: [], chat: [], kv: {} };
-const DEFAULT_SETTINGS = { rafahBudget: 60000, stmtDay: 20, dueDay: 4, model: 'claude-haiku-5-5', customModel: '', deepModel: 'claude-opus-5-5', prices: structuredClone(C.DEFAULT_PRICES), pricesVersion: 2, capUsd: 5, notes: '', sortByUse: true };
+const DEFAULT_SETTINGS = { rafahBudget: 60000, stmtDay: 20, dueDay: 4, model: 'claude-haiku-5-5', customModel: '', deepModel: 'claude-opus-5-5', prices: structuredClone(C.DEFAULT_PRICES), pricesVersion: 2, capUsd: 5, notes: '', sortByUse: true, catNudges: false, theme: 'dark' };
+// (v1.8) catNudges: the "📈 X this month vs your average. شو صاير؟" notes, opt-in (Ahmad found them annoying). theme: dark | light | auto
 const ui = {
   view: 'add', dayDate: today(), monthYm: thisMonth(), moneySeg: 'acc', projDate: null,
   qa: null, parsed: null, pendingImg: null, sending: false, persisted: null,
@@ -121,19 +122,19 @@ function sortedCats() {
 }
 
 // ---------------- Views ----------------
-const TITLES = { add: 'مصروفي', day: 'اليوم', month: 'الشهر', money: 'فلوسي', ask: 'اسأل كلاود', settings: 'الإعدادات', sms: 'رسائل البنك' };
+const TITLES = { add: 'مصروفي', day: 'اليوم', month: 'الشهر', money: 'فلوسي', ask: 'اسأل كلاود', settings: 'الإعدادات', sms: 'رسائل البنك', goals: 'أهداف التوفير' };
 
 function render() {
   const v = ui.view;
   $('#title').textContent = TITLES[v];
   const hb = $('#hdrBtn');
-  if (v === 'settings' || v === 'sms') { hb.dataset.act = 'back'; delete hb.dataset.v; hb.innerHTML = '→ رجوع'; hb.setAttribute('aria-label', 'رجوع'); hb.classList.add('back'); }
+  if (SUB.includes(v)) { hb.dataset.act = 'back'; delete hb.dataset.v; hb.innerHTML = '→ رجوع'; hb.setAttribute('aria-label', 'رجوع'); hb.classList.add('back'); }
   else { hb.dataset.act = 'go'; hb.dataset.v = 'settings'; hb.innerHTML = '⚙️'; hb.setAttribute('aria-label', 'الإعدادات'); hb.classList.remove('back'); }
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   $('#view').innerHTML = VIEWS[v]();
   AFTER[v]?.();
 }
-const SUB = ['settings', 'sms'];
+const SUB = ['settings', 'sms', 'goals'];
 function go(v) {
   if (v === 'sms' && !ui.sms) openReview(); if (SUB.includes(v) && !SUB.includes(ui.view)) ui.prevView = ui.view; ui.view = v; render(); window.scrollTo(0, 0); }
 
@@ -150,20 +151,72 @@ function backupStatus() {
   return { hasData, level: days > 7 ? 'yellow' : 'ok', text: days === 0 ? 'اليوم' : `قبل ${days} يوم`, remind: hasData && days > 7 };
 }
 
-function heroCard() {
+function balancesCard() {
   const b = L.balances(state);
   const cc = L.cardCycle(state);
   const bs = backupStatus();
-  const td = today(), spentToday = state.entries.filter(e => e.date === td).reduce((a, e) => a + e.amount, 0);
-  const spentMonth = L.monthStats(state, thisMonth()).total;
-  return `<div class="card hero">
-    <div class="spendrow"><div><div class="lbl">صرفت اليوم</div><div class="mid amt" id="spentToday">${jd(spentToday)}</div></div><div><div class="lbl">هالشهر</div><div class="mid amt" id="spentMonth">${jd(spentMonth)}</div></div></div>
-    <div class="lbl">الصافي (توفير + كاش − البطاقة)</div>
-    <div class="big amt ${b.net < 0 ? 'neg' : ''}" id="netBig">${jd(b.net)}</div>
-    <div class="minirow"><span>توفير <b class="amt">${jd(b.savings)}</b></span><span>كاش <b class="amt">${jd(b.cash)}</b></span><span>بطاقة <b class="amt">${jd(b.card)}</b></span></div>
-    <div class="minirow" style="margin-top:6px"><span>مستحق يوم ${parseYmd(cc.dueDate).getDate()}: <b class="amt">${jd(cc.dueAmount)}</b>${cc.closed ? '' : ' <span class="pill">تقريبي</span>'}</span>
-    <span>آخر نسخة احتياطية: <b id="backupAge" class="bk-${bs.level}">${bs.text}</b></span></div>
+  return `<div class="card balcard" id="balCard">
+    <div class="balhead"><span class="lbl">الصافي <span class="sub">(توفير + كاش − البطاقة)</span></span><b class="amt ${b.net < 0 ? 'bad' : ''}" id="netBig">${jd(b.net)}</b></div>
+    <div class="baltiles"><div><span>توفير</span><b class="amt">${jd(b.savings)}</b></div><div><span>كاش</span><b class="amt">${jd(b.cash)}</b></div><div><span>بطاقة</span><b class="amt">${jd(b.card)}</b></div></div>
+    <div class="minirow"><span>💳 مستحق يوم ${parseYmd(cc.dueDate).getDate()}: <b class="amt">${jd(cc.dueAmount)}</b>${cc.closed ? '' : ' <span class="pill">تقريبي</span>'}</span>
+    <span>💾 آخر نسخة: <b id="backupAge" class="bk-${bs.level}">${bs.text}</b></span></div>
   </div>`;
+}
+
+// (v1.8, 2026-11-16, Ahmad: "ياريت و ياريت") 💸 الضايل الآمن: ONE number on home, how much he can spend today and stay on track. Tap = the math.
+function safeCard() {
+  const sf = L.safeToSpend(state);
+  const head = `<div class="spendrow"><div><span>صرفت اليوم</span><b class="amt" id="spentToday">${jd(sf.spentToday)}</b></div><div><span>هالشهر</span><b class="amt" id="spentMonth">${jd(sf.spentMonth)}</b></div></div>`;
+  if (!sf.ok) return `<div class="card safe" id="safeCard" data-act="safeInfo" role="button"><div class="safelbl">💸 الضايل الآمن لليوم</div>
+    <div class="safehint">ضيف دخلك (فلوسي ← دخل) أو اكتب أرصدتك، وبحسبلك كم فيك تصرف كل يوم.</div>${head}</div>`;
+  const lvl = sf.today <= 0 ? 'lv-bad' : sf.today < sf.todayBudget * 0.35 ? 'lv-warn' : 'lv-good';
+  return `<div class="card safe ${lvl}" id="safeCard" data-act="safeInfo" role="button" aria-label="الضايل الآمن، اضغط للتفاصيل">
+    <div class="safelbl">💸 الضايل الآمن لليوم <span class="info">؟</span></div>
+    <div class="safebig amt" id="safeToday">${jd(Math.max(0, sf.today))}<small>د.أ</small></div>
+    <div class="safesub">${sf.today <= 0 ? (sf.left <= 0 ? 'خلص مصروف هالشهر، بس الضروري لآخره' : 'خلصت حصة اليوم، بكرا بترجع') : `لآخر الشهر <b class="amt">${jd(Math.max(0, sf.left))}</b> · ${nDays(sf.daysLeft)}`}</div>
+    ${head}</div>`;
+}
+
+function safeSheet() {
+  const sf = L.safeToSpend(state);
+  const r = L.rafahStatus(state), cc = L.cardCycle(state);
+  const row = (label, v, cls = '') => `<div class="kv"><span>${label}</span><span class="amt ${cls}">${v}</span></div>`;
+  const body = !sf.ok ? `<p>لسا ما في دخل مسجل ولا أرصدة. ضيف دخلك المتوقع من <b>فلوسي ← دخل</b> (أو اكتب أرصدتك بـ <b>فلوسي ← حسابات</b>) وبطلعلك الرقم.</p>` : `
+    <div class="safebig amt" style="text-align:center">${jd(Math.max(0, sf.today))}<small>د.أ</small></div>
+    <div class="sub" style="text-align:center;margin-bottom:8px">${sf.mode === 'cash' ? 'محسوب من فلوسك الموجودة (ما في دخل مسجل)' : 'محسوب من دخل هالشهر'}</div>
+    <div class="explain">
+    ${sf.mode !== 'cash' ? `${row(sf.incomeEst ? `+ دخل الشهر (تقدير: ${esc(sf.usualBasis)})` : '+ دخل هالشهر', jd(sf.income), 'good')}
+    ${!sf.incomeEst && (sf.incExp || sf.recvExp) ? `<div class="kv sub"><span>· وصل ${jd(sf.incGot)}، وجاي أكيد ${jd(sf.incExp + sf.recvExp)}</span><span></span></div>` : ''}
+    ${row('− التزامات هالشهر', jd(sf.oblPaid + sf.oblDue), 'bad')}
+    ${row('− أهداف التوفير هالشهر', jd(sf.goalIn + sf.goalReserve), 'bad')}
+    ${row('− صرفت هالشهر', jd(sf.spentMonth), 'bad')}` : `${row('الصافي هلأ', jd(sf.net))}
+    ${row('+ دخل جاي أكيد لآخر الشهر', jd(sf.incExp + sf.recvExp), 'good')}
+    ${row('− التزامات لآخر الشهر', jd(sf.oblDue), 'bad')}
+    ${row('− محجوز للأهداف', jd(sf.goalHeld + sf.goalReserve), 'bad')}`}
+    <div class="totalrow"><span>= ضايل لآخر الشهر</span><span class="amt" id="safeLeft">${jd(sf.left)}</span></div>
+    ${row(`÷ ${nDays(sf.daysLeft)} (مع اليوم)`, jd(sf.todayBudget))}
+    ${sf.spentToday ? row('− صرفت اليوم', jd(sf.spentToday), 'bad') : ''}
+    </div>
+    ${sf.mode === 'capped' ? `<div class="banner yellow">الرقم محدود بالفلوس اللي معك فعلياً: الصافي ${jd(sf.net)} + الجاي الأكيد − الالتزامات − المحجوز للأهداف = ${jd(sf.byCash)}.</div>` : ''}
+    <ul class="dots">
+      <li>🎉 الرفاهية: ضايلك <b class="amt">${jd(Math.max(0, r.left))}</b> من <span class="amt">${jd(r.budget)}</span> هالشهر (من ضمن الرقم، مش زيادة عليه).</li>
+      <li>💳 البطاقة: مصاريفها محسوبة لما صرفتها، والسداد (${jd(cc.dueAmount)} يوم ${parseYmd(cc.dueDate).getDate()}) تحويل من التوفير، فما بينحسب مرتين.</li>
+      <li>📅 الالتزامات اللي بدون تاريخ والدخل المش أكيد مش محسوبين.</li>
+    </ul>`;
+  openSheet(`<h3>💸 الضايل الآمن لليوم</h3>${body}<button class="btn" id="sfOk" style="margin-top:10px">تمام</button>`, sh => { sh.querySelector('#sfOk').onclick = closeSheet; });
+}
+
+// (v1.8) 🎯 goals on home: compact, one row each; tap = the goals screen
+const goalBar = p => `<div class="bar ${p.done ? 'ok' : 'goal'}"><i style="width:${(p.pct * 100).toFixed(1)}%"></i></div>`;
+function goalsHomeCard() {
+  const gs = L.goalsOf(state);
+  if (!gs.length) return `<button class="btn ghost goalcta" data-act="go" data-v="goals">🎯 حط هدف توفير</button>`;
+  const cap = L.saveCapacity(state).cap;
+  return `<div class="card goalscard" id="goalsHome"><div class="cardhead"><h2>🎯 أهدافي</h2><button class="linkbtn" data-act="go" data-v="goals">الكل ←</button></div>
+    ${gs.map(g => { const p = L.goalPlan(state, g, today(), cap); return `<div class="goalrow" data-act="go" data-v="goals">
+      <div class="gtop"><span class="gname">${esc(g.icon || '🎯')} ${esc(g.name)}</span><span class="gpct amt">${Math.round(p.pct * 100)}%</span></div>
+      ${goalBar(p)}
+      <div class="gsub"><span><span class="amt">${jd(p.saved)}</span> من <span class="amt">${jd(g.target)}</span></span><span>${p.done ? '🎉 وصلت' : p.perMonth ? `<b class="amt">${jdShort(p.perMonth)}</b> بالشهر` : p.eta ? `توصل ${monthLabel(p.eta)}` : ''}</span></div></div>`; }).join('')}</div>`;
 }
 
 function bannersHtml() {
@@ -181,9 +234,10 @@ const AFTER = {};
 VIEWS.add = () => {
   const q = ui.qa;
   const cat = q.cat && L.catById(state, q.cat);
-  return `${heroCard()}${bannersHtml()}
-  <div class="card" id="qaCard">
-    <input id="qaAmount" class="amount-in" type="text" inputmode="decimal" placeholder="0.000" value="${esc(q.amount)}" autocomplete="off" aria-label="المبلغ">
+  return `${safeCard()}
+  <div class="card qa" id="qaCard">
+    <label class="qalbl" for="qaAmount">كم صرفت؟</label>
+    <div class="amtbox"><input id="qaAmount" class="amount-in big" type="text" inputmode="decimal" enterkeyhint="next" placeholder="0.000" value="${esc(q.amount)}" autocomplete="off" aria-label="المبلغ"><span class="cur">د.أ</span></div>
     <div class="cats" id="qaCats">${sortedCats().map(c => `<button type="button" data-act="pickCat" data-id="${c.id}" class="${q.cat === c.id ? 'on' : ''}"><span class="ic">${esc(c.icon || '•')}</span>${esc(c.name)}</button>`).join('')}</div>
     ${cat?.subs?.length ? `<div class="chips">${cat.subs.map(s => `<button type="button" class="chip ${q.sub === s ? 'on' : ''}" data-act="pickSub" data-val="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
     <label class="field"><span>ملاحظة</span><input id="qaNote" type="text" value="${esc(q.note)}" placeholder="مثلاً groceries"></label>
@@ -192,6 +246,9 @@ VIEWS.add = () => {
     <label class="field toggle" style="margin-top:28px"><span>رفاهية</span><input id="qaRafah" type="checkbox" ${q.rafah ? 'checked' : ''} ${cat?.kind === 'sadaqa' ? 'disabled' : ''}></label></div>
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
+  ${goalsHomeCard()}
+  ${balancesCard()}
+  ${bannersHtml()}
   ${MANUAL_ONLY ? '' : `<button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك${reviewCount() ? ` <span class="pill warn" id="reviewBadge">${reviewCount()} بدها مراجعة</span>` : ''}</button>${inboxOn() ? `<div class="sub" style="text-align:center" id="homeLastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}</div>` : ''}`}
   <details class="card" id="pasteBox" ${ui.parsed || ui.multi || ui.multiDone ? 'open' : ''}>
     <summary>📋 الصق ملاحظة اليوم</summary>
@@ -276,7 +333,7 @@ VIEWS.day = () => {
   <div class="card">
     ${list.length ? `<ul class="list">${list.map(e => { const c = L.catById(state, e.cat); const v = L.entryVerdict(state, e); return `<li class="item">
       <div class="ic">${esc(c?.icon || '•')}</div>
-      <div class="main"><div class="t">${esc(e.note || c?.name || '')}</div><div class="s">${esc(c?.name || 'محذوفة')}${e.sub ? ' · ' + esc(e.sub) : ''} · ${L.ACCOUNTS[e.from]}${e.rafah ? ' · <span class="pill warn">رفاهية</span>' : ''}</div><div class="s">${v.icon} ${esc(v.text)}</div></div>
+      <div class="main"><div class="t">${esc(e.note || c?.name || '')}</div><div class="s">${esc(c?.name || 'محذوفة')}${e.sub ? ' · ' + esc(e.sub) : ''} · ${L.ACCOUNTS[e.from]}${e.rafah ? ' · <span class="pill warn">رفاهية</span>' : ''}</div>${v.level === 'warn' || v.level === 'bad' ? `<div class="s">${v.icon} ${esc(v.text)}</div>` : ''}</div>
       <div class="v">${amt(e.amount)}</div>
       <div class="acts"><button data-act="editEntry" data-id="${e.id}" aria-label="تعديل">✏️</button><button data-act="delEntry" data-id="${e.id}" aria-label="حذف">🗑️</button></div></li>`; }).join('')}</ul>` : '<div class="sub">ما في مصاريف بهاليوم.</div>'}
     <div class="totalrow"><span>مجموع اليوم</span><span class="amt" id="dayTotal">${jd(total)}</span></div>
@@ -892,12 +949,98 @@ function autoPull() {
 document.addEventListener('visibilitychange', autoPull);
 window.addEventListener('focus', autoPull);
 
+// ----- Goals (v1.8) -----
+VIEWS.goals = () => {
+  const gs = L.goalsOf(state);
+  const c = L.saveCapacity(state);
+  return `<div class="card capcard"><div class="lbl">قدرتك على التوفير تقريباً</div>
+    <div class="big amt ${c.cap < 0 ? 'bad' : ''}" id="capBig">${jd(c.cap)}<small> بالشهر</small></div>
+    <div class="explain">
+      <div class="kv"><span>دخلك بالشهر <span class="sub">(${esc(c.incomeBasis)})</span></span><span class="amt good">${jd(c.income)}</span></div>
+      <div class="kv"><span>− مصروفك بالشهر <span class="sub">(${esc(c.spendBasis)})</span></span><span class="amt bad">${jd(c.spend)}</span></div>
+      <div class="kv"><span>− التزامات شهرية</span><span class="amt bad">${jd(c.commit)}</span></div>
+    </div></div>
+  ${gs.length ? gs.map(g => goalCardHtml(g, c.cap)).join('') : `<div class="card empty"><div style="font-size:2.2rem">🎯</div><p>حط هدف (سيارة، طوارئ، سفرة...) وأنا بحسبلك كم لازم توفر بالشهر وبالأسبوع، وبحجزلك حصته من "الضايل الآمن".</p></div>`}
+  <button class="btn pri" data-act="newGoal">➕ هدف جديد</button>
+  <div class="sub" style="margin-top:10px">الهدف فلوس محجوزة جوّا حساباتك: ما بيحرك أي رصيد، بس بيطلّعها من "الضايل الآمن" عشان ما تنصرف.</div>`;
+};
+function goalCardHtml(g, cap) {
+  const p = L.goalPlan(state, g, today(), cap);
+  const when = g.deadline ? (p.late ? `<span class="bad">فات الموعد (${fd(g.deadline)})</span>` : `لحد ${fd(g.deadline)} · ${p.monthsLeft === 1 ? 'هالشهر' : `${p.monthsLeft} شهور`}`) : g.monthly > 0 ? `خطتك ${jdShort(g.monthly)} بالشهر` : 'بدون موعد';
+  const fit = !p.done && p.perMonth > 0 && cap != null ? (p.perMonth <= cap ? '<span class="pill good">ضمن قدرتك</span>' : '<span class="pill warn">أكثر من قدرتك</span>') : '';
+  return `<div class="card goal" data-id="${g.id}">
+    <div class="gtop"><span class="gname big">${esc(g.icon || '🎯')} ${esc(g.name)}</span><span class="gpct amt">${Math.round(p.pct * 100)}%</span></div>
+    ${goalBar(p)}
+    <div class="gsub"><span><b class="amt">${jd(p.saved)}</b> من <span class="amt">${jd(g.target)}</span></span><span>${p.done ? '🎉 وصلت!' : `ضايل <span class="amt">${jd(p.left)}</span>`}</span></div>
+    <div class="sub" style="margin-top:4px">${when}</div>
+    ${p.done ? '' : p.perMonth ? `<div class="plan"><div><span>بالشهر</span><b class="amt">${jd(p.perMonth)}</b></div><div><span>بالأسبوع</span><b class="amt">${jd(p.perWeek)}</b></div><div><span>هالشهر حطيت</span><b class="amt">${jd(Math.max(0, p.thisMonth))}</b></div></div>
+      <div class="sub">${p.reserve ? `ضايل تحط <b class="amt">${jd(p.reserve)}</b> هالشهر (محجوزة من الضايل الآمن)` : '✅ حطيت حصة هالشهر'} ${fit}</div>`
+      : `<div class="sub">${p.eta ? `بقدرتك الحالية (${jdShort(p.rate)} بالشهر) بتوصل تقريباً ${monthLabel(p.eta)}.` : 'حط موعد أو مبلغ شهري عشان أحسبلك الخطة.'}</div>`}
+    <div class="btns"><button class="btn sm pri" data-act="goalAdd" data-id="${g.id}">➕ حطيت</button><button class="btn sm" data-act="goalTake" data-id="${g.id}">➖ سحبت</button><button class="btn sm ico" data-act="goalEdit" data-id="${g.id}" aria-label="تعديل">✏️</button><button class="btn sm danger ico" data-act="goalDel" data-id="${g.id}" aria-label="حذف">🗑️</button></div>
+  </div>`;
+}
+async function saveGoals(list) { await setKV('goals', list); }
+function goalSheet(g) {
+  const x = g || { name: '', icon: '🎯', target: 0, deadline: '', monthly: 0, start: 0 };
+  const icons = ['🎯', '🛡️', '🚗', '🏠', '✈️', '💻', '📱', '💍', '🕋', '🎓', '🌱', '🐈'];
+  openSheet(`<h3>${g ? 'تعديل الهدف' : '🎯 هدف جديد'}</h3>
+    <div class="chips" id="gIcons">${icons.map(i => `<button type="button" class="chip ${i === (x.icon || '🎯') ? 'on' : ''}" data-ic="${i}">${i}</button>`).join('')}</div>
+    <label class="field"><span>شو الهدف؟</span><input id="gName" type="text" value="${esc(x.name)}" placeholder="مثلاً صندوق طوارئ"></label>
+    <label class="field"><span>كم المبلغ؟</span><div class="amtbox"><input id="gTarget" type="text" inputmode="decimal" class="amount-in" value="${x.target ? jd(x.target) : ''}" placeholder="0.000"><span class="cur">د.أ</span></div></label>
+    <label class="field"><span>معك منه هلأ (اختياري)</span><input id="gStart" type="text" inputmode="decimal" class="amt" value="${x.start ? jd(x.start) : ''}" placeholder="0.000"></label>
+    <div class="field"><span>لإيمتى؟ (اختياري)</span>${dateField('gDeadline', x.deadline || '', `min="${today()}"`)}</div>
+    <label class="field"><span>أو كم بدك تحط بالشهر؟ (اختياري، إذا ما في موعد)</span><input id="gMonthly" type="text" inputmode="decimal" class="amt" value="${x.monthly ? jd(x.monthly) : ''}" placeholder="0.000"></label>
+    <div class="btns"><button class="btn pri" id="gSave">احفظ</button>${x.deadline ? '<button class="btn ghost" id="gNoDate">شيل الموعد</button>' : ''}<button class="btn ghost" id="gCancel">إلغاء</button></div>`, sh => {
+    let icon = x.icon || '🎯';
+    sh.querySelectorAll('#gIcons [data-ic]').forEach(b => b.onclick = () => { icon = b.dataset.ic; sh.querySelectorAll('#gIcons .chip').forEach(c => c.classList.toggle('on', c === b)); });
+    sh.querySelector('#gCancel').onclick = closeSheet;
+    const nd = sh.querySelector('#gNoDate'); if (nd) nd.onclick = () => { const d = sh.querySelector('#gDeadline'); d.value = ''; d.dispatchEvent(new Event('change', { bubbles: true })); nd.remove(); };
+    sh.querySelector('#gSave').onclick = async () => {
+      const name = sh.querySelector('#gName').value.trim(), target = toFils(sh.querySelector('#gTarget').value);
+      const st = sh.querySelector('#gStart').value.trim(), mo = sh.querySelector('#gMonthly').value.trim();
+      const start = st ? toFils(st) : 0, monthly = mo ? toFils(mo) : 0;
+      if (!name) return toast('اكتب اسم الهدف');
+      if (!(target > 0)) return toast('اكتب المبلغ');
+      if (!(start >= 0) || !(monthly >= 0)) return toast('في رقم غلط');
+      const rec = { contribs: [], ...g, id: g?.id || uid(), ts: g?.ts || Date.now(), name, icon, target, start, monthly, deadline: sh.querySelector('#gDeadline').value || null };
+      const list = [...L.goalsOf(state)]; const i = list.findIndex(z => z.id === rec.id);
+      if (i >= 0) list[i] = rec; else list.push(rec);
+      await saveGoals(list); closeSheet(); render(); toast('انحفظ ✓');
+    };
+  });
+}
+function goalMoveSheet(g, sign) {
+  const p = L.goalPlan(state, g);
+  const sugg = sign > 0 ? (p.reserve || p.perWeek || 0) : 0;
+  openSheet(`<h3>${sign > 0 ? `➕ حطيت لـ ${esc(g.name)}` : `➖ سحبت من ${esc(g.name)}`}</h3>
+    <div class="amtbox"><input id="gcAmt" type="text" inputmode="decimal" class="amount-in big" value="${sugg ? jd(sugg) : ''}" placeholder="0.000"><span class="cur">د.أ</span></div>
+    <div class="sub" style="margin:8px 0">${sign > 0 ? 'بس بتعلّم إنك حجزتها للهدف، ما بيتحرك أي رصيد.' : `معك فيه ${jd(p.saved)}. السحب بيرجّعها للمصروف.`}</div>
+    <div class="btns"><button class="btn pri" id="gcSave">${sign > 0 ? 'حطيت ✓' : 'سحبت'}</button><button class="btn ghost" id="gcCancel">إلغاء</button></div>`, sh => {
+    sh.querySelector('#gcCancel').onclick = closeSheet;
+    sh.querySelector('#gcSave').onclick = async () => {
+      const a = toFils(sh.querySelector('#gcAmt').value);
+      if (!(a > 0)) return toast('اكتب المبلغ');
+      if (sign < 0 && a > p.saved) return toast(`معك فيه ${jd(p.saved)} بس`);
+      const list = L.goalsOf(state).map(z => z.id === g.id ? { ...z, contribs: [...(z.contribs || []), { id: uid(), ts: Date.now(), date: today(), amount: sign * a }] } : z);
+      await saveGoals(list); closeSheet(); render();
+      const np = L.goalPlan(state, list.find(z => z.id === g.id));
+      toast(np.done ? '🎉 وصلت لهدفك!' : `${iso((sign > 0 ? '+' : '−') + jd(a))} · ${Math.round(np.pct * 100)}% ✓`);
+    };
+  });
+}
+
 // ----- Settings -----
 VIEWS.settings = () => {
   const s = settings();
   const cats = [...state.kv.categories].sort((a, b) => a.order - b.order);
   const priceRows = Object.entries(s.prices).map(([m, [i, o]]) => `<div class="row" data-model="${esc(m)}"><span class="sub amt" style="flex:1.4">${esc(m)}</span><input type="text" inputmode="decimal" class="prIn amt" value="${i}"><input type="text" inputmode="decimal" class="prOut amt" value="${o}"></div>`).join('');
-  return `<div class="verbadge">مصروفي <b class="amt">v${APP_VERSION}</b></div><h2>🔑 Claude</h2><div class="card">
+  return `<div class="verbadge">مصروفي <b class="amt">v${APP_VERSION}</b></div>
+  <h2>🎯 أهداف التوفير</h2><div class="card"><div class="sub" style="margin-bottom:8px">${L.goalsOf(state).length ? `عندك ${L.goalsOf(state).length} ${L.goalsOf(state).length === 1 ? 'هدف' : 'أهداف'}` : 'ما في أهداف لسا'}</div><button class="btn" data-act="go" data-v="goals">🎯 أهدافي</button></div>
+  <h2>🎨 الشكل والتنبيهات</h2><div class="card">
+    <div class="field"><span>المظهر</span><div class="seg" id="themeSeg">${[['dark', 'غامق'], ['light', 'فاتح'], ['auto', 'حسب التلفون']].map(([v, l]) => `<button type="button" data-theme="${v}" class="${(s.theme || 'dark') === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="field"><span>حجم الخط</span><div class="seg" id="fontSeg">${[[1, 'عادي'], [1.12, 'كبير'], [1.25, 'أكبر']].map(([v, l]) => `<button type="button" data-fs="${v}" class="${(s.fontScale || 1.12) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <label class="toggle"><span>قارن التصنيفات بمعدلك<br><span class="sub">ملاحظات زي "📈 المزرعة هالشهر فوق معدلك، شو صاير؟"</span></span><input id="catNudges" type="checkbox" ${s.catNudges ? 'checked' : ''}></label></div>
+  <h2>🔑 Claude</h2><div class="card">
     <label class="field"><span>مفتاح API ${state.kv.apiKey ? '<span class="pill good">محفوظ</span>' : ''}</span><input id="apiKey" type="password" dir="ltr" autocomplete="off" placeholder="${state.kv.apiKey ? '•••••• (محفوظ)' : 'sk-ant-...'}"></label>
     <div class="btns"><button class="btn" data-act="saveKey">احفظ المفتاح</button>${state.kv.apiKey ? '<button class="btn danger" data-act="delKey">امسح المفتاح</button>' : ''}</div>
     <div class="sub">المفتاح بضل بهالتلفون بس (IndexedDB)، وما بنحط بالكود ولا بالنسخة الاحتياطية إلا إذا اخترت.</div>
@@ -916,7 +1059,6 @@ VIEWS.settings = () => {
     <button class="btn pri" data-act="saveBudget">احفظ</button></div>
 
   <h2>🗂️ التصنيفات</h2><div class="card">
-    <div class="field"><span>حجم الخط</span><div class="seg" id="fontSeg">${[[1, 'عادي'], [1.12, 'كبير'], [1.25, 'أكبر']].map(([v, l]) => `<button type="button" data-fs="${v}" class="${(s.fontScale || 1.12) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <label class="toggle"><span>رتّب أزرار التصنيفات حسب الاستخدام</span><input id="sortByUse" type="checkbox" ${s.sortByUse ? 'checked' : ''}></label>
     <div id="catList">${cats.map((c, i) => `<div class="catedit" data-id="${c.id}">
       <input type="text" class="cIcon" value="${esc(c.icon || '')}" style="text-align:center">
@@ -959,6 +1101,8 @@ AFTER.settings = () => {
   $('#bulkText').addEventListener('input', e => { ui.bulkText = e.target.value; });
   $('#importIn').addEventListener('change', e => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ''; });
   $('#sortByUse').addEventListener('change', async e => { settings().sortByUse = e.target.checked; await saveSettings(); toast('انحفظ ✓'); });
+  $('#catNudges').addEventListener('change', async e => { settings().catNudges = e.target.checked; await saveSettings(); toast(e.target.checked ? 'رح أقارن بمعدلك ✓' : 'وقفت المقارنات ✓'); });
+  $$('#themeSeg button').forEach(bt => bt.addEventListener('click', async () => { settings().theme = bt.dataset.theme; applyTheme(); await saveSettings(); render(); }));
   $$('#fontSeg button').forEach(bt => bt.addEventListener('click', async () => { settings().fontScale = Number(bt.dataset.fs); applyFontScale(); await saveSettings(); render(); }));
   navigator.storage?.persisted?.().then(p => { ui.persisted = p; const el = $('#persistState'); if (el) el.innerHTML = p ? '<span class="good">مفعّل ✓</span>' : '<span class="warn">مش مضمون</span>'; }).catch(() => {});
 };
@@ -1085,7 +1229,23 @@ function showGuide() {
 
 // ---------------- Actions ----------------
 const ACT = {
-  go: el => go(el.dataset.v),
+  go: el => {
+    go(el.dataset.v);
+    // (v1.8, Ahmad: "المكان اللي بكتب فيو الرقم ... يبين اكثر") tapping "سجّل" puts the cursor in the big amount field (inside the tap, so iOS opens the keypad)
+    if (el.dataset.v === 'add' && el.closest('#tabs')) $('#qaAmount')?.focus({ preventScroll: true });
+  },
+  safeInfo: () => safeSheet(),
+  newGoal: () => goalSheet(),
+  goalEdit: el => { const g = L.goalsOf(state).find(z => z.id === el.dataset.id); if (g) goalSheet(g); },
+  goalAdd: el => { const g = L.goalsOf(state).find(z => z.id === el.dataset.id) || L.goalsOf(state)[0]; if (g) goalMoveSheet(g, 1); },
+  goalTake: el => { const g = L.goalsOf(state).find(z => z.id === el.dataset.id); if (g) goalMoveSheet(g, -1); },
+  goalDel: async el => {
+    const g = L.goalsOf(state).find(z => z.id === el.dataset.id); if (!g) return;
+    if (!confirm(`نحذف الهدف "${g.name}"؟ (ما بيتغيّر أي رصيد)`)) return;
+    const before = L.goalsOf(state);
+    await saveGoals(before.filter(z => z.id !== g.id)); render();
+    toast('انحذف', 'رجّعه', async () => { await saveGoals(before); render(); });
+  },
   smsParse: () => { ui.smsText = $('#smsText').value; ui.smsDone = ''; smsParse(ui.smsText); ui.smsFromFile = false; render(); },
   smsApply: () => smsApply(),
   pullNow: () => pullInbox(),
@@ -1123,6 +1283,7 @@ const ACT = {
     if (!q.cat) { toast('اختار تصنيف'); return; }
     const e = await addEntry({ amount, cat: q.cat, sub: q.sub, note: q.note, from: q.from, date: q.date, rafah: q.rafah });
     resetQA(q.from);
+    document.activeElement?.blur?.();
     render();
     const v = L.entryVerdict(state, e);
     toast(`${v.icon} ${iso(jd(amount))} · ${v.text}`, 'تراجع', async () => { await delRec('entries', e.id); render(); });
@@ -1435,11 +1596,21 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------- Boot ----------------
+// (v1.8) dark (default, as before) / light / auto (follows the phone)
+function applyTheme() {
+  const t = settings().theme || 'dark';
+  const dark = t === 'dark' || (t === 'auto' && !matchMedia('(prefers-color-scheme: light)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', dark ? '#0f1218' : '#f4f5f8');
+  document.querySelector('meta[name=color-scheme]')?.setAttribute('content', dark ? 'dark' : 'light');
+}
+matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => { if (state.kv.settings?.theme === 'auto') applyTheme(); });
 function applyFontScale() { document.documentElement.style.setProperty('--fs', (16 * (settings().fontScale || 1.12)).toFixed(1) + 'px'); }
 async function boot() {
   try { await load(); }
   catch (err) { $('#view').innerHTML = `<div class="banner red">ما قدرت أفتح التخزين: ${esc(err.message || err)}</div>`; return; }
   applyFontScale();
+  applyTheme();
   if (state.kv.pinHash) await lockScreen();
   render();
   if (!isStandalone() && !state.kv.guideDismissed) showGuide();

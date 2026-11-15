@@ -1,6 +1,6 @@
 // Claude API (user's own key, called straight from the phone). No key = the app still works.
 import { jd, today, monthLabel, ymd, parseYmd, dayLabel, dateShort } from './util.js';
-import { monthStats, rafahStatus, balances, obligationsUntil, cardCycle, catName, S, ACCOUNTS } from './logic.js';
+import { monthStats, rafahStatus, balances, obligationsUntil, cardCycle, catName, S, ACCOUNTS, goalsOf, goalPlan, safeToSpend } from './logic.js';
 
 export const MODELS = ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'];
 export const DEEP_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5'];
@@ -49,7 +49,13 @@ export function buildContext(state, ref = today()) {
     `دخل متوقع (مش محسوب بالسيولة لحد ما يوصل): ${inc.map(i => `${i.source} ${jd(i.amount)} ${dateShort(i.date)}${i.sure ? ' أكيد' : ' مش أكيد'}`).join('، ') || 'ولا شي'}.`,
     `إلي عند الناس (مش محسوب بالسيولة): ${(state.receivables || []).filter(r => !r.done).map(r => `${r.who} ${r.amount > 0 ? jd(r.amount) : (r.amountText || 'بدون رقم')}${r.due ? ' ' + dateShort(r.due) : r.expected ? ' ' + r.expected : ''}${r.sure ? ' أكيد' : ' مش أكيد'}`).join('، ') || 'ولا شي'}.`,
     `التصنيفات: ${state.kv.categories.map(c => c.name).join('، ')}.`,
+
   ];
+  // (v1.8) savings goals + the safe-to-spend number, so Claude's advice matches what the home screen says
+  const goals = goalsOf(state);
+  if (goals.length) lines.push(`أهداف التوفير: ${goals.map(g => { const p = goalPlan(state, g, ref); return `${g.name} ${jd(p.saved)}/${jd(g.target)}${g.deadline ? ` لحد ${dateShort(g.deadline)}` : ''}${p.perMonth ? `، لازم ${jd(p.perMonth)} بالشهر` : ''}`; }).join('، ')}.`);
+  const sf = safeToSpend(state, ref);
+  if (sf.ok) lines.push(`الضايل الآمن لليوم: ${jd(Math.max(0, sf.today))} (لآخر الشهر ${jd(sf.left)}، ${sf.daysLeft} يوم).`);
   const notes = S(state).notes?.trim();
   if (notes) lines.push(`ملاحظات عني: ${notes}`);
   return lines.join('\n');

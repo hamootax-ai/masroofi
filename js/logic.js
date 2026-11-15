@@ -1,5 +1,5 @@
 // Pure business logic: balances, month stats, card cycle, projection, advice, note parsing.
-import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, EN_MONTHS, AR_MONTHS, AR_MONTHS_LEVANT, uid, dateShort, nDays } from './util.js';
+import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, pad, EN_MONTHS, AR_MONTHS, AR_MONTHS_LEVANT, uid, dateShort, nDays } from './util.js';
 
 export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير', none: 'ما تخصم من الحسابات' };
 // 'none' = opening entry: counts in day/month/category/rafah totals but never touches an account.
@@ -518,7 +518,8 @@ export function entryVerdict(state, e) {
     return { icon: '✅', level: 'ok', text: 'تمام' };
   }
   if (cat?.kind === 'need') return { icon: '✅', level: 'ok', text: 'ضروري' };
-  const avg = categoryAvg(state, ym, e.cat);
+  // (v1.8, Ahmad: "المحلاظات ... مزعجة") the "above your average" note only when he turned it on in Settings (off by default)
+  const avg = S(state).catNudges ? categoryAvg(state, ym, e.cat) : null;
   const monthCat = monthStats(state, ym).byCat[e.cat] || 0;
   const bal = balances(state);
   if (e.amount >= 50000 && bal.net < e.amount * 3) return { icon: '❌', level: 'bad', text: 'مش وقته: مبلغ كبير والسيولة ما بتتحمل' };
@@ -547,7 +548,9 @@ export function adviceBanners(state, ref = today()) {
   const cc = cardCycle(state, ref);
   if (cc.dueAmount > 0 && cc.daysLeft <= 3) out.push({ level: 'yellow', text: `💳 البطاقة مستحقة ${cc.daysLeft === 0 ? 'اليوم' : `بعد ${cc.daysLeft} ${cc.daysLeft === 1 ? 'يوم' : 'أيام'}`}: ${jd(cc.dueAmount)}. حوّل من التوفير.` });
 
-  const ms = monthStats(state, ym);
+  // (v1.8, 2026-11-16, Ahmad: "المحلاظات خاي، مثلا المزرعة كدا شو صرلك؟ ... مزعجة") the "📈 X this month vs your average. شو صاير؟"
+  // banner is opt-in now: Settings -> تنبيهات -> قارن التصنيفات بمعدلك (off by default)
+  const ms = S(state).catNudges ? monthStats(state, ym) : { byCat: {} };
   for (const [catId, amt] of Object.entries(ms.byCat)) {
     const cat = catById(state, catId);
     if (!cat || cat.kind === 'sadaqa') continue;
@@ -689,4 +692,103 @@ export function parseImport(text, state, ts = Date.now()) {
     seen.receivables.add(recKey(rec)); out.receivables.push(rec);
   });
   return out;
+}
+
+// ---------- Savings goals (v1.8, 2026-11-16, Ahmad: "ياريت و ياريت") ----------
+// Stored in kv 'goals' (no IndexedDB schema change): [{id, ts, name, icon, target (fils), deadline (YYYY-MM-DD|null),
+//   monthly (fils, his own plan when there is no deadline; 0 = none), start (fils already put aside before), contribs: [{id, ts, date, amount (+ put in / - took out)}]}]
+// A goal is money SET ASIDE inside his accounts: it never moves a balance, it only keeps that money out of "safe to spend".
+export const goalsOf = state => state.kv.goals || [];
+export const goalSaved = g => (g.start || 0) + (g.contribs || []).reduce((a, c) => a + c.amount, 0);
+const monthNo = ym => { const [y, m] = ym.split('-').map(Number); return y * 12 + m - 1; };
+const ceilJd = f => Math.ceil(f / 1000) * 1000; // plan numbers in whole dinars: "35 بالشهر" reads better than 34.167
+
+/** His usual monthly income: the average that actually arrived in the last 3 months the app knows about, else his sure recurring income. */
+export function monthlyIncome(state, ref = today()) {
+  const refYm = ref.slice(0, 7);
+  const dates = [...state.entries.map(e => e.date), ...state.incomes.map(i => i.receivedDate || i.date)].filter(Boolean).sort();
+  const first = dates.length ? dates[0].slice(0, 7) : refYm;
+  const months = [1, 2, 3].map(n => addMonths(refYm, -n)).filter(m => m >= first);
+  const got = {};
+  for (const i of state.incomes) if (i.status === 'received' && i.receivedDate) { const m = i.receivedDate.slice(0, 7); got[m] = (got[m] || 0) + (i.receivedAmount ?? i.amount); }
+  const hist = months.length ? Math.round(months.reduce((a, m) => a + (got[m] || 0), 0) / months.length) : 0;
+  let rec = 0;
+  for (const i of state.incomes) {
+    if (i.status !== 'expected' || !i.sure) continue;
+    if (i.recur === 'monthly') rec += i.amount; else if (i.recur === 'yearly') rec += i.amount / 12; else if (i.recur === 'months') rec += i.amount * (i.months || []).length / 12;
+  }
+  rec = Math.round(rec);
+  if (hist > 0) return { avg: hist, basis: `معدل الدخل اللي وصلك آخر ${months.length === 1 ? 'شهر' : `${months.length} شهور`}` };
+  if (rec > 0) return { avg: rec, basis: 'من دخلك المتكرر الأكيد' };
+  return { avg: 0, basis: 'ما في دخل مسجّل' };
+}
+
+/** What he can put aside per month: usual income − usual spending − monthly commitments. */
+export function saveCapacity(state, ref = today()) {
+  const inc = monthlyIncome(state, ref);
+  const spend = avgMonthlySpend(state, ref.slice(0, 7));
+  const commit = state.obligations.filter(o => !o.done && o.monthly).reduce((a, o) => a + o.amount, 0);
+  return { income: inc.avg, incomeBasis: inc.basis, spend: spend.avg, spendBasis: spend.basis, commit, cap: inc.avg - spend.avg - commit };
+}
+
+/** Per goal: progress, what to put aside per month / week, and how much of this month is still to be set aside (the reserve). */
+export function goalPlan(state, g, ref = today(), capacity = null) {
+  const ym = ref.slice(0, 7);
+  const saved = goalSaved(g), left = Math.max(0, g.target - saved), done = saved >= g.target;
+  const thisMonth = (g.contribs || []).filter(c => c.date && c.date.slice(0, 7) === ym).reduce((a, c) => a + c.amount, 0);
+  const leftAtStart = Math.max(0, g.target - (saved - thisMonth)); // the plan is fixed for the month: putting money in lowers the reserve, not the plan
+  let perMonth = 0, monthsLeft = null, late = false, daysLeft = null;
+  if (g.deadline) {
+    daysLeft = daysBetween(ref, g.deadline);
+    monthsLeft = monthNo(g.deadline.slice(0, 7)) - monthNo(ym) + 1; // this month counts
+    if (monthsLeft < 1) { late = true; monthsLeft = 1; }
+    perMonth = ceilJd(leftAtStart / monthsLeft);
+  } else if (g.monthly > 0) perMonth = Math.min(g.monthly, leftAtStart);
+  if (done) perMonth = 0;
+  const perWeek = Math.ceil(perMonth * 12 / 52 / 100) * 100;
+  const reserve = done ? 0 : Math.max(0, Math.min(perMonth - Math.max(0, thisMonth), left));
+  // when will he get there: at his own monthly plan, else at his saving capacity
+  const rate = g.deadline ? perMonth : g.monthly > 0 ? g.monthly : Math.max(0, capacity ?? 0);
+  const etaMonths = !done && rate > 0 ? Math.ceil(left / rate) : null;
+  const eta = etaMonths != null ? addMonths(ym, etaMonths - 1) : null;
+  return { saved, left, done, pct: g.target > 0 ? Math.min(1, Math.max(0, saved / g.target)) : 0, thisMonth, perMonth, perWeek, reserve, monthsLeft, daysLeft, late, rate, eta };
+}
+
+// ---------- Safe to spend today (v1.8) ----------
+/** "الضايل الآمن": this month's income − commitments − goal money − what he already spent, spread over the days left (today included).
+ *  Never more than the money he really has (liquidity + income still coming − commitments − goal money) once a real balance is typed. */
+export function safeToSpend(state, ref = today()) {
+  const ym = ref.slice(0, 7), mEnd = `${ym}-${pad(daysInMonth(ym))}`;
+  const inMonth = d => !!d && d.slice(0, 7) === ym;
+  const daysLeft = daysInMonth(ym) - parseYmd(ref).getDate() + 1;
+  const incGot = state.incomes.filter(i => i.status === 'received' && inMonth(i.receivedDate)).reduce((a, i) => a + (i.receivedAmount ?? i.amount), 0);
+  const incExp = sum(incomeUntil(state, mEnd).filter(i => i.sure));
+  const recvExp = sum(receivablesUntil(state, mEnd).list);
+  const usual = monthlyIncome(state, ref);
+  let income = incGot + incExp + recvExp, incomeEst = false;
+  if (income <= 0 && usual.avg > 0) { income = usual.avg; incomeEst = true; } // nothing logged for this month yet: his usual month
+  const oblPaid = state.obligations.flatMap(o => o.payments || []).filter(p => p.account !== 'none' && inMonth(p.date)).reduce((a, p) => a + p.amount, 0);
+  const oblDue = sum(obligationsUntil(state, mEnd).list); // still to pay up to the month end (late ones too)
+  const cap = saveCapacity(state, ref).cap;
+  const goals = goalsOf(state).map(g => ({ g, p: goalPlan(state, g, ref, cap) }));
+  const goalReserve = goals.reduce((a, x) => a + x.p.reserve, 0);
+  const goalIn = goals.reduce((a, x) => a + Math.max(0, x.p.thisMonth), 0);
+  const goalHeld = goals.reduce((a, x) => a + Math.max(0, x.p.saved), 0);
+  const spentMonth = monthStats(state, ym).total;
+  const spentToday = sum(state.entries.filter(e => e.date === ref));
+  const hasIncome = income > 0;
+  const byIncome = income - oblPaid - oblDue - goalIn - goalReserve - spentMonth;
+  const accs = state.kv.accounts || {};
+  const hasBal = ['savings', 'cash', 'card'].some(k => accs[k]?.baseTs > 0);
+  const bal = balances(state);
+  const byCash = bal.net + incExp + recvExp - oblDue - goalReserve - goalHeld;
+  if (!hasIncome && !hasBal) return { ok: false, daysLeft, spentToday, spentMonth };
+  let left, mode;
+  if (!hasIncome) { left = byCash; mode = 'cash'; }
+  else if (hasBal && byCash < byIncome) { left = byCash; mode = 'capped'; }
+  else { left = byIncome; mode = 'income'; }
+  const todayBudget = Math.floor((left + spentToday) / daysLeft); // the share of today, before today's spending
+  const today_ = todayBudget - spentToday;
+  return { ok: true, mode, today: today_, todayBudget, left, daysLeft, mEnd, income, incGot, incExp, recvExp, incomeEst, usualBasis: usual.basis,
+    oblPaid, oblDue, goalReserve, goalIn, goalHeld, goals, spentMonth, spentToday, byIncome, byCash, net: bal.net, hasBal };
 }
