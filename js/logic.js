@@ -788,8 +788,10 @@ export function safeToSpend(state, ref = today()) {
   const byCash = bal.net - oblDue - goalReserve - goalHeld; // (v1.9) only money that is really here
   if (!hasIncome && !hasBal) return { ok: false, daysLeft, spentToday, spentMonth };
   let left, mode;
-  if (!hasIncome) { left = byCash; mode = 'cash'; }
-  else if (hasBal && byCash < byIncome) { left = byCash; mode = 'capped'; }
+  // (v1.9.1, 2026-11-16, Ahmad: "شو هالقلتش" at 0.000: this month's spending was more than the income that ARRIVED this month (the rest
+  // came out of savings), so the income line went negative while real money was still there) with balances entered, the money that is
+  // really here decides; the income line is only used when there are no balances
+  if (hasBal || !hasIncome) { left = byCash; mode = 'cash'; }
   else { left = byIncome; mode = 'income'; }
   const floor3 = x => Math.floor(x * 1000) / 1000; // (v1.9: whole-dinar flooring showed 0 for a small but real daily share)
   const todayBudget = floor3((left + spentToday) / daysLeft); // the share of today, before today's spending
