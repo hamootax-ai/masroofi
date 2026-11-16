@@ -794,9 +794,31 @@ export function safeToSpend(state, ref = today()) {
   if (hasBal || !hasIncome) { left = byCash; mode = 'cash'; }
   else { left = byIncome; mode = 'income'; }
   const floor3 = x => Math.floor(x * 1000) / 1000; // (v1.9: whole-dinar flooring showed 0 for a small but real daily share)
+  // 📅 (v1.10, 2026-11-16, Ahmad: "انا كمان بهمني الفعلي" -> picked: the BIG number by dates, the strict one as a small line) with balances:
+  // every sure income / money owed to him counts on ITS day, every obligation on ITS due day (late ones today). The daily amount is the
+  // most he can spend each day so the balance never goes below zero on any day up to the month end.
+  let plan = null;
+  if (hasBal) {
+    const ev = [];
+    for (const i of incomeUntil(state, mEnd).filter(i => i.sure)) ev.push({ date: i.date < ref ? ref : i.date, amt: i.amount, kind: 'in', label: i.source || '' });
+    for (const r of receivablesUntil(state, mEnd).list) ev.push({ date: r.date < ref ? ref : r.date, amt: r.amount, kind: 'in', label: r.who || '' });
+    for (const o of obligationsUntil(state, mEnd).list) ev.push({ date: o.date < ref ? ref : o.date, amt: -o.amount, kind: 'out', label: o.title || '' });
+    ev.sort((x, z) => x.date.localeCompare(z.date) || (x.amt - z.amt)); // (same day: pay first, to be safe)
+    let cum = bal.net - goalReserve - goalHeld + spentToday, best = Infinity, low = Infinity, lowDate = ref;
+    const byDate = {};
+    for (const e of ev) byDate[e.date] = (byDate[e.date] || 0) + e.amt;
+    for (let k = 0; k < daysLeft; k++) {
+      const d = ymd(new Date(parseYmd(ref).getTime() + k * 86400000 + 3600000));
+      cum += byDate[d] || 0;
+      best = Math.min(best, cum / (k + 1));
+      if (cum < low) { low = cum; lowDate = d; }
+    }
+    const daily = floor3(Math.max(0, best));
+    plan = { daily, today: daily - spentToday, events: ev, low, lowDate };
+  }
   const todayBudget = floor3((left + spentToday) / daysLeft); // the share of today, before today's spending
   const today_ = todayBudget - spentToday;
   const todayIfComing = coming > 0 ? floor3((left + coming + spentToday) / daysLeft) - spentToday : null;
-  return { ok: true, mode, today: today_, todayBudget, left, daysLeft, mEnd, income, incGot, incExp, recvExp, incomeEst, usualBasis: usual.basis, coming, todayIfComing,
+  return { ok: true, mode, today: today_, todayBudget, left, daysLeft, mEnd, income, incGot, incExp, recvExp, incomeEst, usualBasis: usual.basis, coming, todayIfComing, plan,
     oblPaid, oblDue, goalReserve, goalIn, goalHeld, goals, spentMonth, spentToday, byIncome, byCash, net: bal.net, hasBal };
 }

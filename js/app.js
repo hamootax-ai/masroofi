@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.9.2';
+export const APP_VERSION = '1.10.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -169,6 +169,18 @@ function safeCard() {
   const head = `<div class="spendrow"><div><span>صرفت اليوم</span><b class="amt" id="spentToday">${jd(sf.spentToday)}</b></div><div><span>هالشهر</span><b class="amt" id="spentMonth">${jd(sf.spentMonth)}</b></div></div>`;
   if (!sf.ok) return `<div class="card safe" id="safeCard" data-act="safeInfo" role="button"><div class="safelbl">💸 الضايل الآمن لليوم</div>
     <div class="safehint">ضيف دخلك (فلوسي ← دخل) أو اكتب أرصدتك، وبحسبلك كم فيك تصرف كل يوم.</div>${head}</div>`;
+  // 📅 (v1.10, Ahmad picked "by dates" as the big number) with balances the big number = the by-dates plan; the strict one is the small line
+  if (sf.plan) {
+    const p = sf.plan, short = p.low < 0;
+    const lvl = p.today <= 0 ? 'lv-bad' : p.today < p.daily * 0.35 ? 'lv-warn' : 'lv-good';
+    const strict = sf.today > 0 ? `بالإيد بس: <b class="amt">${jd(sf.today)}</b> باليوم` : (sf.left < 0 ? `بالإيد بس: ناقصك <b class="amt">${jd(-sf.left)}</b> لحد ما يوصل الجاي` : 'بالإيد بس: 0');
+    return `<div class="card safe ${lvl}" id="safeCard" data-act="safeInfo" role="button" aria-label="الضايل الآمن، اضغط للتفاصيل">
+    <div class="safelbl">💸 الضايل الآمن لليوم <span class="info">؟</span></div>
+    <div class="safebig amt" id="safeToday">${jd(Math.max(0, p.today))}<small>د.أ</small></div>
+    <div class="safesub">${short ? `⚠️ رصيدك بينزل تحت الصفر يوم ${dateShort(p.lowDate)} (ناقص <b class="amt">${jd(-p.low)}</b>) قبل ما يوصل الجاي` : p.today <= 0 ? 'خلصت حصة اليوم، بكرا بترجع' : `بالتواريخ: الجاي بيومه والالتزامات بيومها · ${nDays(sf.daysLeft)}`}</div>
+    <div class="safesub" style="opacity:.75">${strict}</div>
+    ${head}</div>`;
+  }
   const lvl = sf.today <= 0 ? 'lv-bad' : sf.today < sf.todayBudget * 0.35 ? 'lv-warn' : 'lv-good';
   return `<div class="card safe ${lvl}" id="safeCard" data-act="safeInfo" role="button" aria-label="الضايل الآمن، اضغط للتفاصيل">
     <div class="safelbl">💸 الضايل الآمن لليوم <span class="info">؟</span></div>
@@ -182,8 +194,16 @@ function safeSheet() {
   const r = L.rafahStatus(state), cc = L.cardCycle(state);
   const row = (label, v, cls = '') => `<div class="kv"><span>${label}</span><span class="amt ${cls}">${v}</span></div>`;
   const body = !sf.ok ? `<p>لسا ما في دخل مسجل ولا أرصدة. ضيف دخلك المتوقع من <b>فلوسي ← دخل</b> (أو اكتب أرصدتك بـ <b>فلوسي ← حسابات</b>) وبطلعلك الرقم.</p>` : `
-    <div class="safebig amt" style="text-align:center">${jd(Math.max(0, sf.today))}<small>د.أ</small></div>
-    <div class="sub" style="text-align:center;margin-bottom:8px">${sf.mode === 'cash' ? 'محسوب من فلوسك الموجودة (ما في دخل مسجل)' : 'محسوب من دخل هالشهر'}</div>
+    ${sf.plan ? `<div class="safebig amt" style="text-align:center">${jd(Math.max(0, sf.plan.today))}<small>د.أ</small></div>
+    <div class="sub" style="text-align:center;margin-bottom:8px">📅 بالتواريخ: الجاي بيوم وصوله، والالتزامات بيوم استحقاقها، وما بيخلي رصيدك ينزل تحت الصفر ولا يوم</div>
+    <div class="explain">
+    ${row('الصافي هلأ − المحجوز للأهداف', jd(sf.net - sf.goalReserve - sf.goalHeld))}
+    ${sf.plan.events.map(e => row(`${e.kind === 'in' ? '+' : '−'} ${esc(e.label)} · ${fd(e.date)}`, jd(Math.abs(e.amt)), e.kind === 'in' ? 'good' : 'bad')).join('')}
+    ${sf.plan.low < 0 ? `<div class="banner red">⚠️ يوم ${fd(sf.plan.lowDate)} رصيدك بيصير <b class="amt">${jd(sf.plan.low)}</b>: التزامات قبل ما يوصل الجاي. يا بتأجلها يا بتجيب الفرق.</div>` : ''}
+    </div>
+    <h4 style="margin:12px 0 4px">🔒 بالإيد بس (الصارم)</h4>
+    <div class="sub" style="margin-bottom:6px">${jd(Math.max(0, sf.today))} باليوم: بس الفلوس اللي معك هلأ، بدون الجاي.</div>` : `<div class="safebig amt" style="text-align:center">${jd(Math.max(0, sf.today))}<small>د.أ</small></div>
+    <div class="sub" style="text-align:center;margin-bottom:8px">${sf.mode === 'cash' ? 'محسوب من فلوسك الموجودة (ما في دخل مسجل)' : 'محسوب من دخل هالشهر'}</div>`}
     <div class="explain">
     ${sf.mode === 'income' ? `${row(sf.incomeEst ? `+ دخل الشهر (تقدير: ${esc(sf.usualBasis)})` : '+ دخل وصل هالشهر', jd(sf.income), 'good')}
     ${row('− التزامات هالشهر', jd(sf.oblPaid + sf.oblDue), 'bad')}
