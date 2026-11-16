@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.10.0';
+export const APP_VERSION = '1.10.1';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -156,7 +156,7 @@ function balancesCard() {
   const cc = L.cardCycle(state);
   const bs = backupStatus();
   return `<div class="card balcard" id="balCard">
-    <div class="balhead"><span class="lbl">الصافي <span class="sub">(توفير + كاش − البطاقة)</span></span><b class="amt ${b.net < 0 ? 'bad' : ''}" id="netBig">${jd(b.net)}</b></div>
+    <div class="balhead"><span class="lbl">💰 كم معي فعلياً <span class="sub">(توفير + كاش − البطاقة)</span></span><b class="amt ${b.net < 0 ? 'bad' : ''}" id="netBig">${jd(b.net)}</b></div>
     <div class="baltiles"><div><span>توفير</span><b class="amt">${jd(b.savings)}</b></div><div><span>كاش</span><b class="amt">${jd(b.cash)}</b></div><div><span>بطاقة</span><b class="amt">${jd(b.card)}</b></div></div>
     <div class="minirow"><span>💳 مستحق يوم ${parseYmd(cc.dueDate).getDate()}: <b class="amt">${jd(cc.dueAmount)}</b>${cc.closed ? '' : ' <span class="pill">تقريبي</span>'}</span>
     <span>💾 آخر نسخة: <b id="backupAge" class="bk-${bs.level}">${bs.text}</b></span></div>
@@ -252,7 +252,8 @@ const AFTER = {};
 VIEWS.add = () => {
   const q = ui.qa;
   const cat = q.cat && L.catById(state, q.cat);
-  return `${safeCard()}
+  // (v1.10.1, 2026-11-16, Ahmad: "بدي اهم اشي فوق كم معي كامل فعلي و كاش و توفير و بطاقة") the balances card is the FIRST thing on home
+  return `${balancesCard()}${safeCard()}
   <div class="card qa" id="qaCard">
     <label class="qalbl" for="qaAmount">كم صرفت؟</label>
     <div class="amtbox"><input id="qaAmount" class="amount-in big" type="text" inputmode="decimal" enterkeyhint="next" placeholder="0.000" value="${esc(q.amount)}" autocomplete="off" aria-label="المبلغ"><span class="cur">د.أ</span></div>
@@ -265,7 +266,6 @@ VIEWS.add = () => {
     <button class="btn pri" data-act="qaSave">سجّل</button>
   </div>
   ${goalsHomeCard()}
-  ${balancesCard()}
   ${bannersHtml()}
   ${MANUAL_ONLY ? '' : `<button class="btn" data-act="go" data-v="sms" id="smsBtn">📩 رسائل البنك${reviewCount() ? ` <span class="pill warn" id="reviewBadge">${reviewCount()} بدها مراجعة</span>` : ''}</button>${inboxOn() ? `<div class="sub" style="text-align:center" id="homeLastPull">📥 آخر سحب: ${agoText(inboxCfg().lastPull)}</div>` : ''}`}
   <details class="card" id="pasteBox" ${ui.parsed || ui.multi || ui.multiDone ? 'open' : ''}>
