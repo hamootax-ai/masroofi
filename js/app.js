@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.10.1';
+export const APP_VERSION = '1.11.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -160,6 +160,7 @@ function balancesCard() {
     <div class="baltiles"><div><span>توفير</span><b class="amt">${jd(b.savings)}</b></div><div><span>كاش</span><b class="amt">${jd(b.cash)}</b></div><div><span>بطاقة</span><b class="amt">${jd(b.card)}</b></div></div>
     <div class="minirow"><span>💳 مستحق يوم ${parseYmd(cc.dueDate).getDate()}: <b class="amt">${jd(cc.dueAmount)}</b>${cc.closed ? '' : ' <span class="pill">تقريبي</span>'}</span>
     <span>💾 آخر نسخة: <b id="backupAge" class="bk-${bs.level}">${bs.text}</b></span></div>
+    <button class="btn sm" data-act="quickTransfer" id="quickTransfer" style="margin-top:8px;width:100%">🔁 حوّلت بين حساباتي (مثلاً من التوفير للكاش)</button>
   </div>`;
 }
 
@@ -497,23 +498,64 @@ function recvSheet(r) {
     <label class="field"><span>أو اكتب متى (اختياري)</span><input id="rvExp" type="text" value="${esc(x.expected || '')}" placeholder="مثلاً بعد الموسم"></label>
     <label class="field toggle"><span>أكيد؟ (بينحسب بالتوقّع)</span><input id="rvSure" type="checkbox" ${x.sure ? 'checked' : ''}></label>
     <label class="field"><span>ملاحظة</span><input id="rvNote" type="text" value="${esc(x.note || '')}"></label>
+    ${r ? (r.lentTransferId ? `<div class="sub">💸 دينته من ${L.ACCOUNTS[r.lentFrom] || ''}: تعديل المبلغ بعدّل الخصم كمان.</div>` : '') : `<label class="field toggle"><span>💸 دينته من مصرياتي (بينخصم من رصيدي)</span><input id="rvLent" type="checkbox"></label>
+    <div class="field hidden" id="rvLentBox"><span>من وين طلع؟</span>${fromSeg('rvAcc', 'cash')}</div>`}
     <div class="btns"><button class="btn pri" id="rvSave">احفظ</button><button class="btn ghost" id="rvCancel">إلغاء</button></div>`, sh => {
+    // (v1.11, 2026-11-16, Ahmad: "هل في خيار انه مثلا دينت شخص من مصرياتي") lending = a transfer from his account to 'lent' (in no balance):
+    // the money leaves the balance now and comes back as a transfer when it's returned (never an expense, never new income)
+    let lendAcc = 'cash';
+    sh.querySelectorAll('[data-name=rvAcc]').forEach(b => b.addEventListener('click', () => { lendAcc = b.dataset.val; }));
+    const lent = sh.querySelector('#rvLent');
+    if (lent) lent.onchange = () => sh.querySelector('#rvLentBox').classList.toggle('hidden', !lent.checked);
     sh.querySelector('#rvCancel').onclick = closeSheet;
     sh.querySelector('#rvSave').onclick = async () => {
       const who = sh.querySelector('#rvWho').value.trim();
       if (!who) return toast('اكتب مين');
       const a = readRecvAmount(sh.querySelector('#rvAmt').value);
-      await saveRec('receivables', { id: r?.id || uid(), ts: r?.ts || Date.now(), done: false, ...r, who, ...a, due: sh.querySelector('#rvDue').value || null, expected: sh.querySelector('#rvExp').value.trim(), sure: sh.querySelector('#rvSure').checked, note: sh.querySelector('#rvNote').value.trim() });
-      closeSheet(); render(); toast('انحفظ ✓');
+      const id = r?.id || uid(), lendNow = !!(lent && lent.checked), extra = {};
+      if ((lendNow || r?.lentTransferId) && !(a.amount > 0)) return toast('اكتب المبلغ رقم (عشان ينخصم)');
+      if (lendNow) {
+        const t = { id: uid(), ts: Date.now(), date: today(), from: lendAcc, to: 'lent', amount: a.amount, note: `دين لـ${who}`, recv: id };
+        await saveRec('transfers', t);
+        extra.lentFrom = lendAcc; extra.lentTransferId = t.id;
+      } else if (r?.lentTransferId) {
+        const t = state.transfers.find(x => x.id === r.lentTransferId);
+        if (t && t.amount !== a.amount) await saveRec('transfers', { ...t, amount: a.amount, note: `دين لـ${who}` });
+      }
+      await saveRec('receivables', { id, ts: r?.ts || Date.now(), done: false, ...r, who, ...a, due: sh.querySelector('#rvDue').value || null, expected: sh.querySelector('#rvExp').value.trim(), sure: sh.querySelector('#rvSure').checked, note: sh.querySelector('#rvNote').value.trim(), ...extra });
+      closeSheet(); render(); toast(lendNow ? `انخصم ${iso(jd(a.amount))} من ${L.ACCOUNTS[lendAcc]} ✓` : 'انحفظ ✓');
     };
   });
 }
+// (v1.11, 2026-11-16, Ahmad: "او مثلا حولت من توفير لكاش") the transfer, one tap from home (it was hidden under "متقدم")
+function transferSheet(from = 'savings', to = 'cash') {
+  openSheet(`<h3>🔁 تحويل بين حساباتي</h3>
+    <div class="field"><span>من</span>${fromSeg('qtFrom', from)}</div>
+    <div class="field"><span>إلى</span>${fromSeg('qtTo', to)}</div>
+    <label class="field"><span>كم؟</span><input id="qtAmt" type="text" inputmode="decimal" class="amount-in" placeholder="0.000"></label>
+    <label class="field"><span>ملاحظة (اختياري)</span><input id="qtNote" type="text"></label>
+    <div class="sub">التحويل مش مصروف: بس بنقل المبلغ من حساب لحساب.</div>
+    <div class="btns"><button class="btn pri" id="qtSave">حوّل</button><button class="btn ghost" id="qtCancel">إلغاء</button></div>`, sh => {
+    let f = from, t = to;
+    sh.querySelectorAll('[data-name=qtFrom]').forEach(b => b.addEventListener('click', () => { f = b.dataset.val; }));
+    sh.querySelectorAll('[data-name=qtTo]').forEach(b => b.addEventListener('click', () => { t = b.dataset.val; }));
+    sh.querySelector('#qtCancel').onclick = closeSheet;
+    sh.querySelector('#qtSave').onclick = async () => {
+      const amount = toFils(sh.querySelector('#qtAmt').value);
+      if (f === t) return toast('اختار حسابين مختلفين');
+      if (!(amount > 0)) return toast('اكتب المبلغ');
+      await saveRec('transfers', { id: uid(), ts: Date.now(), date: today(), from: f, to: t, amount, note: sh.querySelector('#qtNote').value.trim() });
+      closeSheet(); render(); toast(`حوّلت ${iso(jd(amount))} من ${L.ACCOUNTS[f]} لـ${L.ACCOUNTS[t]} ✓`);
+    };
+  });
+}
+
 function recvGotSheet(r) {
   openSheet(`<h3>وصلك من ${esc(r.who)}؟</h3>
     <label class="field"><span>المبلغ اللي وصل</span><input id="rgAmt" type="text" inputmode="decimal" class="amount-in" value="${r.amount > 0 ? jd(r.amount) : ''}" placeholder="0.000"></label>
-    <label class="field toggle"><span>ضيفه دخل على حساب</span><input id="rgInc" type="checkbox" checked></label>
+    <label class="field toggle"><span>${r.lentTransferId ? 'رجّعه على حساب' : 'ضيفه دخل على حساب'}</span><input id="rgInc" type="checkbox" checked></label>
     <div class="field" id="rgAccBox"><span>وين حطيته؟</span>${fromSeg('rgAcc', 'cash')}</div>
-    <div class="sub" id="rgHint">رح ينسجل دخل واصل، والرصيد بيزيد.</div>
+    <div class="sub" id="rgHint">${r.lentTransferId ? 'برجع على رصيدك (مش دخل جديد: كانت مصرياتك).' : 'رح ينسجل دخل واصل، والرصيد بيزيد.'}</div>
     <div class="btns"><button class="btn pri" id="rgSave">وصل ✓</button><button class="btn ghost" id="rgCancel">إلغاء</button></div>`, sh => {
     let acc = 'cash';
     sh.querySelectorAll('[data-name=rgAcc]').forEach(b => b.addEventListener('click', () => { acc = b.dataset.val; }));
@@ -524,8 +566,12 @@ function recvGotSheet(r) {
       const raw = sh.querySelector('#rgAmt').value.trim(), a = raw ? toFils(raw) : NaN;
       if (inc.checked && !(a > 0)) return toast('اكتب المبلغ اللي وصل');
       if (raw && !(a > 0)) return toast('المبلغ غلط');
-      const ts = Date.now(), upd = { ...r, done: true, receivedTs: ts, receivedDate: today(), receivedAmount: a > 0 ? a : null, account: null, incomeId: null };
-      if (inc.checked) {
+      const ts = Date.now(), upd = { ...r, done: true, receivedTs: ts, receivedDate: today(), receivedAmount: a > 0 ? a : null, account: null, incomeId: null, returnTransferId: null };
+      if (inc.checked && r.lentTransferId) {
+        const t = { id: uid(), ts, date: today(), from: 'lent', to: acc, amount: a, note: `رجعلي من ${r.who}`, recv: r.id };
+        await saveRec('transfers', t);
+        upd.account = acc; upd.returnTransferId = t.id;
+      } else if (inc.checked) {
         const income = { id: uid(), ts, source: `من ${r.who}`, amount: a, date: today(), status: 'received', recur: 'none', months: [], sure: true, account: acc, receivedAmount: a, receivedTs: ts, receivedDate: today(), recv: r.id };
         await saveRec('incomes', income);
         upd.account = acc; upd.incomeId = income.id;
@@ -1417,10 +1463,13 @@ const ACT = {
     });
   },
   newRecv: () => recvSheet(),
+  quickTransfer: () => transferSheet(),
   editRecv: el => recvSheet(state.receivables.find(r => r.id === el.dataset.id)),
   delRecv: async el => {
     const r = state.receivables.find(x => x.id === el.dataset.id); if (!r) return;
-    if (!confirm(`نحذف "${r.who}"؟${r.incomeId ? ' (الدخل اللي انضاف منه بضل، احذفه من "دخل" إذا بدك)' : ''}`)) return;
+    if (!confirm(`نحذف "${r.who}"؟${r.incomeId ? ' (الدخل اللي انضاف منه بضل، احذفه من "دخل" إذا بدك)' : ''}${r.lentTransferId && !r.done ? ' والمبلغ اللي دينته برجع على رصيدك.' : ''}`)) return;
+    if (r.lentTransferId) await delRec('transfers', r.lentTransferId);
+    if (r.returnTransferId) await delRec('transfers', r.returnTransferId);
     await delRec('receivables', r.id); render();
   },
   recvGot: el => { const r = state.receivables.find(x => x.id === el.dataset.id); if (r) recvGotSheet(r); },
@@ -1428,7 +1477,8 @@ const ACT = {
     const r = state.receivables.find(x => x.id === el.dataset.id); if (!r) return;
     if (!confirm(`نرجّع "${r.who}" لسا ما وصل؟${r.incomeId ? ' والدخل اللي انضاف منه بينشال من الحساب.' : ''}`)) return;
     if (r.incomeId) await delRec('incomes', r.incomeId);
-    await saveRec('receivables', { ...r, done: false, receivedTs: null, receivedDate: null, receivedAmount: null, account: null, incomeId: null });
+    if (r.returnTransferId) await delRec('transfers', r.returnTransferId);
+    await saveRec('receivables', { ...r, done: false, receivedTs: null, receivedDate: null, receivedAmount: null, account: null, incomeId: null, returnTransferId: null });
     render();
   },
   newObl: () => oblSheet(),

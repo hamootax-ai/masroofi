@@ -1,7 +1,7 @@
 // Pure business logic: balances, month stats, card cycle, projection, advice, note parsing.
 import { jd, jdShort, toFils, today, monthKey, addMonths, addMonthsDate, daysBetween, daysInMonth, parseYmd, ymd, pad, EN_MONTHS, AR_MONTHS, AR_MONTHS_LEVANT, uid, dateShort, nDays } from './util.js';
 
-export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير', none: 'ما تخصم من الحسابات' };
+export const ACCOUNTS = { cash: 'كاش', card: 'بطاقة', savings: 'توفير', none: 'ما تخصم من الحسابات', lent: 'دين عند حدا' }; // (v1.11 lent = money with someone, in no balance)
 // 'none' = opening entry: counts in day/month/category/rafah totals but never touches an account.
 
 // kind drives the built-in rules (necessary / judged / never judged)
