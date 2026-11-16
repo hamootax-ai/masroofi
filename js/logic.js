@@ -765,8 +765,12 @@ export function safeToSpend(state, ref = today()) {
   const incExp = sum(incomeUntil(state, mEnd).filter(i => i.sure));
   const recvExp = sum(receivablesUntil(state, mEnd).list);
   const usual = monthlyIncome(state, ref);
-  let income = incGot + incExp + recvExp, incomeEst = false;
-  if (income <= 0 && usual.avg > 0) { income = usual.avg; incomeEst = true; } // nothing logged for this month yet: his usual month
+  // (v1.9, 2026-11-16, from Ahmad's screenshot: a big "safe" daily number while cash was low and a debt was due soon) his own rule:
+  // "expected income doesn't count until it actually arrives". Expected income + money owed to him are shown as COMING, never spent ahead.
+  const coming = incExp + recvExp;
+  const hasBal0 = ['savings', 'cash', 'card'].some(k => (state.kv.accounts || {})[k]?.baseTs > 0);
+  let income = incGot, incomeEst = false;
+  if (income <= 0 && !hasBal0 && usual.avg > 0) { income = usual.avg; incomeEst = true; } // no balances at all: his usual month, flagged as a guess
   const oblPaid = state.obligations.flatMap(o => o.payments || []).filter(p => p.account !== 'none' && inMonth(p.date)).reduce((a, p) => a + p.amount, 0);
   const oblDue = sum(obligationsUntil(state, mEnd).list); // still to pay up to the month end (late ones too)
   const cap = saveCapacity(state, ref).cap;
@@ -781,14 +785,16 @@ export function safeToSpend(state, ref = today()) {
   const accs = state.kv.accounts || {};
   const hasBal = ['savings', 'cash', 'card'].some(k => accs[k]?.baseTs > 0);
   const bal = balances(state);
-  const byCash = bal.net + incExp + recvExp - oblDue - goalReserve - goalHeld;
+  const byCash = bal.net - oblDue - goalReserve - goalHeld; // (v1.9) only money that is really here
   if (!hasIncome && !hasBal) return { ok: false, daysLeft, spentToday, spentMonth };
   let left, mode;
   if (!hasIncome) { left = byCash; mode = 'cash'; }
   else if (hasBal && byCash < byIncome) { left = byCash; mode = 'capped'; }
   else { left = byIncome; mode = 'income'; }
-  const todayBudget = Math.floor((left + spentToday) / daysLeft); // the share of today, before today's spending
+  const floor3 = x => Math.floor(x * 1000) / 1000; // (v1.9: whole-dinar flooring showed 0 for a small but real daily share)
+  const todayBudget = floor3((left + spentToday) / daysLeft); // the share of today, before today's spending
   const today_ = todayBudget - spentToday;
-  return { ok: true, mode, today: today_, todayBudget, left, daysLeft, mEnd, income, incGot, incExp, recvExp, incomeEst, usualBasis: usual.basis,
+  const todayIfComing = coming > 0 ? floor3((left + coming + spentToday) / daysLeft) - spentToday : null;
+  return { ok: true, mode, today: today_, todayBudget, left, daysLeft, mEnd, income, incGot, incExp, recvExp, incomeEst, usualBasis: usual.basis, coming, todayIfComing,
     oblPaid, oblDue, goalReserve, goalIn, goalHeld, goals, spentMonth, spentToday, byIncome, byCash, net: bal.net, hasBal };
 }

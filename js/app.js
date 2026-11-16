@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.8.0';
+export const APP_VERSION = '1.9.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -185,23 +185,21 @@ function safeSheet() {
     <div class="safebig amt" style="text-align:center">${jd(Math.max(0, sf.today))}<small>د.أ</small></div>
     <div class="sub" style="text-align:center;margin-bottom:8px">${sf.mode === 'cash' ? 'محسوب من فلوسك الموجودة (ما في دخل مسجل)' : 'محسوب من دخل هالشهر'}</div>
     <div class="explain">
-    ${sf.mode !== 'cash' ? `${row(sf.incomeEst ? `+ دخل الشهر (تقدير: ${esc(sf.usualBasis)})` : '+ دخل هالشهر', jd(sf.income), 'good')}
-    ${!sf.incomeEst && (sf.incExp || sf.recvExp) ? `<div class="kv sub"><span>· وصل ${jd(sf.incGot)}، وجاي أكيد ${jd(sf.incExp + sf.recvExp)}</span><span></span></div>` : ''}
+    ${sf.mode === 'income' ? `${row(sf.incomeEst ? `+ دخل الشهر (تقدير: ${esc(sf.usualBasis)})` : '+ دخل وصل هالشهر', jd(sf.income), 'good')}
     ${row('− التزامات هالشهر', jd(sf.oblPaid + sf.oblDue), 'bad')}
     ${row('− أهداف التوفير هالشهر', jd(sf.goalIn + sf.goalReserve), 'bad')}
-    ${row('− صرفت هالشهر', jd(sf.spentMonth), 'bad')}` : `${row('الصافي هلأ', jd(sf.net))}
-    ${row('+ دخل جاي أكيد لآخر الشهر', jd(sf.incExp + sf.recvExp), 'good')}
+    ${row('− صرفت هالشهر', jd(sf.spentMonth), 'bad')}` : `${row('الصافي هلأ (توفير + كاش − البطاقة)', jd(sf.net))}
     ${row('− التزامات لآخر الشهر', jd(sf.oblDue), 'bad')}
     ${row('− محجوز للأهداف', jd(sf.goalHeld + sf.goalReserve), 'bad')}`}
     <div class="totalrow"><span>= ضايل لآخر الشهر</span><span class="amt" id="safeLeft">${jd(sf.left)}</span></div>
     ${row(`÷ ${nDays(sf.daysLeft)} (مع اليوم)`, jd(sf.todayBudget))}
     ${sf.spentToday ? row('− صرفت اليوم', jd(sf.spentToday), 'bad') : ''}
     </div>
-    ${sf.mode === 'capped' ? `<div class="banner yellow">الرقم محدود بالفلوس اللي معك فعلياً: الصافي ${jd(sf.net)} + الجاي الأكيد − الالتزامات − المحجوز للأهداف = ${jd(sf.byCash)}.</div>` : ''}
+    ${sf.coming > 0 ? `<div class="banner yellow">⏳ جاي بس لسا ما وصل: <b class="amt">${jd(sf.coming)}</b> (دخل متوقع + ديون الك). ما بينحسب إلا لما يوصل. لما يوصل بتصير حصة اليوم تقريباً <b class="amt">${jd(Math.max(0, sf.todayIfComing))}</b>.</div>` : ''}
     <ul class="dots">
       <li>🎉 الرفاهية: ضايلك <b class="amt">${jd(Math.max(0, r.left))}</b> من <span class="amt">${jd(r.budget)}</span> هالشهر (من ضمن الرقم، مش زيادة عليه).</li>
       <li>💳 البطاقة: مصاريفها محسوبة لما صرفتها، والسداد (${jd(cc.dueAmount)} يوم ${parseYmd(cc.dueDate).getDate()}) تحويل من التوفير، فما بينحسب مرتين.</li>
-      <li>📅 الالتزامات اللي بدون تاريخ والدخل المش أكيد مش محسوبين.</li>
+      <li>📅 الدخل المتوقع والديون اللي الك ما بتنحسب إلا لما توصل فعلاً (قاعدتك). الالتزامات اللي بدون تاريخ مش محسوبة.</li>
     </ul>`;
   openSheet(`<h3>💸 الضايل الآمن لليوم</h3>${body}<button class="btn" id="sfOk" style="margin-top:10px">تمام</button>`, sh => { sh.querySelector('#sfOk').onclick = closeSheet; });
 }
@@ -1231,8 +1229,8 @@ function showGuide() {
 const ACT = {
   go: el => {
     go(el.dataset.v);
-    // (v1.8, Ahmad: "المكان اللي بكتب فيو الرقم ... يبين اكثر") tapping "سجّل" puts the cursor in the big amount field (inside the tap, so iOS opens the keypad)
-    if (el.dataset.v === 'add' && el.closest('#tabs')) $('#qaAmount')?.focus({ preventScroll: true });
+    // (v1.9, 2026-11-16, Ahmad: "كل ما افتح على سجِّل بفتحلي قائمة اني اكتب الرقم ... مزعجة / المفروض بس اضغط عالفراغ") no auto focus:
+    // the keypad opens only when he taps the amount field
   },
   safeInfo: () => safeSheet(),
   newGoal: () => goalSheet(),
