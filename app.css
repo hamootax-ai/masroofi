@@ -267,3 +267,15 @@ button, a, input, select, textarea, label { touch-action: manipulation; }
 .goal .btns .btn { flex: 1 1 auto; white-space: nowrap; }
 .goal .btns .btn.ico { flex: 0 0 48px; padding: 0; }
 .amtbox input[type=text].amount-in { padding-left: 52px; padding-right: 52px; }
+
+/* v1.12: month -> tap a category -> its entries by day */
+.catbar.tap { cursor: pointer; margin: 4px -8px; padding: 8px; border-radius: 12px; }
+.catbar.tap:active { background: var(--soft); }
+.catbar .hd > span:last-child { display: inline-flex; align-items: center; gap: 4px; }
+.chev { color: var(--mute); flex: none; }
+.sheethd { display: flex; align-items: center; justify-content: space-between; gap: 8px; position: sticky; top: -18px; margin-top: -18px; padding: 18px 0 6px; background: var(--card); z-index: 1; }
+.sheethd h3 { margin: 0; }
+.sheethd .iconbtn { min-width: 40px; height: 40px; font-size: 1rem; }
+.cdday { display: flex; justify-content: space-between; color: var(--mute); font-weight: 700; font-size: .9rem; margin: 16px 0 0; padding: 6px 10px; background: var(--bg2); border-radius: 10px; }
+.cdlist .item { padding: 10px 2px; cursor: pointer; }
+.cdlist .item:active { background: var(--soft); }

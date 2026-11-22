@@ -1,11 +1,11 @@
 import * as db from './db.js';
-import { uid, toFils, jd, jdShort, nDays, nItems, today, thisMonth, addMonths, monthLabel, dayLabel, dateShort, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS } from './util.js';
+import { uid, toFils, jd, jdShort, nDays, nItems, today, thisMonth, addMonths, monthLabel, dayLabel, dateShort, parseYmd, ymd, daysBetween, esc, sha256, AR_MONTHS, AR_DAYS } from './util.js';
 import * as L from './logic.js';
 import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.11.0';
+export const APP_VERSION = '1.12.0';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -365,7 +365,7 @@ VIEWS.day = () => {
 };
 AFTER.day = () => { $('#dayPick').addEventListener('change', e => { if (e.target.value) { ui.dayDate = e.target.value; render(); } }); };
 
-function entrySheet(e) {
+function entrySheet(e, back) {
   const c = L.catById(state, e.cat);
   openSheet(`<h3>تعديل المصروف</h3>
     <label class="field"><span>المبلغ</span><input id="eAmt" type="text" inputmode="decimal" class="amt" value="${jd(e.amount)}"></label>
@@ -381,14 +381,14 @@ function entrySheet(e) {
       sh.querySelector('#eSub').innerHTML = `<option value="">—</option>${(nc?.subs || []).map(s => `<option>${esc(s)}</option>`).join('')}`;
       sh.querySelector('#eRafah').checked = !!nc?.rafah;
     };
-    sh.querySelector('#eCancel').onclick = closeSheet;
+    sh.querySelector('#eCancel').onclick = () => back ? back() : closeSheet();
     sh.querySelector('#eSave').onclick = async () => {
       const amount = toFils(sh.querySelector('#eAmt').value);
       if (!(amount > 0)) return toast('المبلغ غلط');
       const cat = sh.querySelector('#eCat').value;
       const kind = L.catById(state, cat)?.kind;
       await saveRec('entries', { ...e, amount, cat, sub: sh.querySelector('#eSub').value, note: sh.querySelector('#eNote').value.trim(), from: sh.querySelector('#eFrom').value, date: sh.querySelector('#eDate').value || e.date, rafah: kind === 'sadaqa' ? false : sh.querySelector('#eRafah').checked });
-      closeSheet(); render(); toast('انحفظ ✓');
+      closeSheet(); render(); toast('انحفظ ✓'); back?.();
     };
   });
 }
@@ -423,10 +423,36 @@ VIEWS.month = () => {
     <div class="sub">${r.left >= 0 ? `ضايل ${jd(r.left)}` : `متعدّي بـ ${jd(-r.left)}`}</div></div></div>
   ${rows.length ? `<div class="card">${donut(rows)}</div>` : ''}
   <div class="card"><h2 style="margin-top:0">حسب التصنيف</h2>
-    ${rows.length ? rows.map(([id, v]) => { const c = L.catById(state, id); const pv = pm.byCat[id] || 0; return `<div class="catbar"><div class="hd"><span>${esc(c?.icon || '')} ${esc(c?.name || 'محذوفة')}</span><span class="amt">${jd(v)}</span></div><div class="bar"><i style="width:${(v / max * 100).toFixed(1)}%"></i></div><div class="sub">قبل: <span class="amt">${jd(pv)}</span></div></div>`; }).join('') : '<div class="sub">ما في مصاريف.</div>'}
+    ${rows.length ? rows.map(([id, v]) => { const c = L.catById(state, id); const pv = pm.byCat[id] || 0; return `<div class="catbar tap" data-act="catDetail" data-cat="${esc(id)}" role="button" tabindex="0"><div class="hd"><span>${esc(c?.icon || '')} ${esc(c?.name || 'محذوفة')}</span><span><span class="amt">${jd(v)}</span>${CHEV_SVG}</span></div><div class="bar"><i style="width:${(v / max * 100).toFixed(1)}%"></i></div><div class="sub">قبل: <span class="amt">${jd(pv)}</span></div></div>`; }).join('') : '<div class="sub">ما في مصاريف.</div>'}
   </div>
   <button class="btn" data-act="copySummary">📋 انسخ الملخص</button>`;
 };
+// (v1.12, 2026-11-23, Ahmad: tap a category on the month tab -> what exactly went on it) the month's entries of one category,
+// grouped by day (newest day first), its total on top. Same list monthStats().byCat sums, so it always adds up to the row.
+const CHEV_SVG = '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+function catDetailSheet(catId, ym) {
+  const c = L.catById(state, catId);
+  const list = L.catEntries(state, ym, catId);
+  const total = L.sum(list);
+  const days = {};
+  for (const e of list) (days[e.date] ||= []).push(e);
+  const dayKeys = Object.keys(days).sort().reverse();
+  const dayHd = d => `${AR_DAYS[parseYmd(d).getDay()]} ${dateShort(d)}`;
+  const groups = dayKeys.map(d => { const its = days[d].sort((a, b) => a.ts - b.ts); return `<div class="cdday" data-date="${d}"><span>${dayHd(d)}</span><span class="amt">${jd(L.sum(its))}</span></div>
+    <ul class="list cdlist">${its.map(e => `<li class="item tap" data-cdid="${e.id}" role="button" tabindex="0"><div class="main"><div class="t">${esc(e.note || e.sub || c?.name || '')}</div><div class="s">${e.sub && e.note ? esc(e.sub) + ' · ' : ''}${L.ACCOUNTS[e.from] || ''}${e.rafah ? ' · <span class="pill warn">رفاهية</span>' : ''}</div></div><div class="v amt">${jd(e.amount)}</div>${CHEV_SVG}</li>`).join('')}</ul>`; }).join('');
+  openSheet(`<div class="sheethd"><h3>${esc(c?.icon || '')} ${esc(c?.name || 'محذوفة')}</h3><button class="iconbtn" id="cdClose" aria-label="سكّر">✕</button></div>
+    <div class="sub">${monthLabel(ym)} · ${list.length ? nItems(list.length) : 'ما في بنود'}</div>
+    <div class="totalrow"><span>المجموع</span><span class="amt" id="cdTotal">${jd(total)}</span></div>
+    ${list.length ? groups : '<div class="sub" style="margin-top:10px">ما في مصاريف بهالتصنيف هالشهر.</div>'}
+    <button class="btn ghost" id="cdBack" style="margin-top:14px">رجوع</button>`, sh => {
+    sh.querySelector('#cdClose').onclick = closeSheet;
+    sh.querySelector('#cdBack').onclick = closeSheet;
+    sh.querySelectorAll('[data-cdid]').forEach(li => li.onclick = () => {
+      const e = state.entries.find(x => x.id === li.dataset.cdid);
+      if (e) entrySheet(e, () => catDetailSheet(catId, ym));
+    });
+  });
+}
 AFTER.month = () => { $('#monPick').addEventListener('change', e => { if (e.target.value) { ui.monthYm = e.target.value; render(); } }); };
 
 // ----- Money (accounts / income / obligations / projection / big purchase) -----
@@ -1405,6 +1431,7 @@ const ACT = {
     sendChat(`هاي مصاريف ${ui.dayDate === today() ? 'اليوم' : ui.dayDate}، شو رأيك؟\n${txt}`);
   },
   monShift: el => { ui.monthYm = addMonths(ui.monthYm, +el.dataset.n); render(); },
+  catDetail: el => catDetailSheet(el.dataset.cat, ui.monthYm),
   copySummary: () => copyText(C.buildContext(state)),
   moneySeg: el => { ui.moneySeg = el.dataset.val; render(); },
   editBal: el => {

@@ -375,6 +375,8 @@ export function balances(state) {
 // ---------- Month stats ----------
 export const entriesIn = (state, ym) => state.entries.filter(e => monthKey(e.date) === ym);
 export const sum = list => list.reduce((a, e) => a + e.amount, 0);
+/** (v1.12) one category's entries in a month: exactly what monthStats().byCat[cat] adds up. */
+export const catEntries = (state, ym, cat) => entriesIn(state, ym).filter(e => String(e.cat) === String(cat));
 
 export function monthStats(state, ym) {
   const list = entriesIn(state, ym);
