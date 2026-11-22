@@ -1,7 +1,8 @@
 """v1.12 test (2026-11-23, Ahmad: tap a category on the month tab, e.g. البيت 525, and see exactly what went on it): the category
 drill-down sheet. Seeds entries in 2 categories on different days (+ one last month), opens the month tab, taps a category and
 checks the sheet lists exactly those entries grouped by day (newest first) and adds up to the row's total; edit + back + close;
-a previous month shows only its own entries. Headless Chromium at iPhone size. Run with the dev server on 8765."""
+a previous month shows only its own entries. v1.12.1 (Ahmad: "ميز التواريخ بالوان"): each day group has its own colour,
+shared by its header stripe, day name, rows and day-number chips. Headless Chromium at iPhone size. Run with the dev server on 8765."""
 import os, sys, re
 from datetime import date
 from playwright.sync_api import sync_playwright
@@ -66,6 +67,19 @@ with sync_playwright() as p:
     txt = page.inner_text('.sheet')
     check('shows notes', all(n in txt for n in ['كنب', 'منظفات', 'غسالة']) and 'ستارة' not in txt)
     page.screenshot(path=os.path.join(SHOTS, 'v112_cat_detail.png'))
+    COLORS_JS = '''() => [...document.querySelectorAll('.cdgrp')].map(g => { const h = g.querySelector('.cdday'), cs = getComputedStyle(h);
+        return { date: h.dataset.date, stripe: cs.borderRightColor, stripeW: cs.borderRightWidth, name: getComputedStyle(h.firstElementChild).color,
+          rows: [...g.querySelectorAll('[data-cdid]')].map(li => getComputedStyle(li).borderRightColor),
+          nums: [...g.querySelectorAll('.cdnum')].map(n => [n.textContent, getComputedStyle(n).backgroundColor]) }; })'''
+    def color_checks(tag, cg):
+        stripes = [g['stripe'] for g in cg]
+        check(f'{tag}: header stripe on the right (RTL), 4px', all(g['stripeW'] == '4px' for g in cg), str([g['stripeW'] for g in cg]))
+        check(f'{tag}: neighbouring days never share a colour', all(a != b for a, b in zip(stripes, stripes[1:])), str(stripes))
+        check(f'{tag}: up to 6 days all distinct', len(set(stripes[:6])) == min(6, len(stripes)), str(stripes[:6]))
+        check(f'{tag}: day name in its colour', all(g['name'] == g['stripe'] for g in cg))
+        check(f'{tag}: every row has its day colour stripe', all(g['rows'] and all(r == g['stripe'] for r in g['rows']) for g in cg))
+        check(f'{tag}: day-number chips match day + colour', all(len(g['nums']) == len(g['rows']) and all(t == str(int(g['date'][-2:])) and bg == g['stripe'] for t, bg in g['nums']) for g in cg), str([g['nums'] for g in cg][:2]))
+    color_checks('home', page.evaluate(COLORS_JS))
 
     # tap an entry -> the edit sheet; cancel -> back to the list
     page.click('[data-cdid=h2]'); page.wait_for_timeout(150)
@@ -107,7 +121,24 @@ with sync_playwright() as p:
     check('long list still adds up', sum(amts) == row_total == page.evaluate(f"__masroofi.L.monthStats(__masroofi.state, '{ym}').byCat.home"), f'{sum(amts)} {row_total}')
     page.click('#cdClose')
 
-    check('version 1.12.0', '1.12.0' in page.evaluate("import('./js/app.js').then(m => m.APP_VERSION)"))
+    # v1.12.1 colours on a realistic grocery month (like Ahmad's screenshot): 7 days, 1-2 items a day
+    GRO = [(21, 10500, 'Peanuts andall', 'card'), (21, 20290, 'Ayesh market', 'savings'), (18, 50530, 'ماركت العايش دجاج و لحمة و اغراض', 'card'),
+           (16, 21560, 'من مول العايش، دجاج خضار اغراض', 'card'), (15, 3690, 'Qmart', 'card'), (13, 20000, 'groceries', 'none'),
+           (13, 7250, 'خبز وبيض', 'cash'), (10, 14780, 'خضار', 'cash'), (6, 9990, 'حليب', 'cash')]
+    page.evaluate('''([ym, gro]) => { const s = __masroofi.state; gro.forEach(([day, amount, note, from], i) => s.entries.push({ id: 'g' + i, ts: Date.now() + 500 + i,
+        date: ym + '-' + String(day).padStart(2, '0'), amount, cat: 'groceries', sub: '', note, from, rafah: false })); __masroofi.render(); }''', [ym, GRO])
+    page.click('.catbar.tap[data-cat=groceries]'); page.wait_for_timeout(200)
+    cg = page.evaluate(COLORS_JS)
+    check('groceries: 7 day groups', len(cg) == 7, str(len(cg)))
+    color_checks('groceries', cg)
+    check('groceries: still adds up', fils(page.inner_text('#cdTotal')) == sum(g[1] for g in GRO) == page.evaluate(f"__masroofi.L.monthStats(__masroofi.state, '{ym}').byCat.groceries"))
+    page.evaluate("document.querySelector('#toast').innerHTML = ''")  # (the earlier save's toast)
+    page.screenshot(path=os.path.join(SHOTS, 'v1121_cat_detail.png'))
+    page.click('[data-cdid=g2]'); page.wait_for_timeout(150)
+    check('groceries: tap still opens the edit sheet', page.is_visible('#eAmt')); page.click('#eCancel'); page.wait_for_timeout(150)
+    page.click('#cdClose')
+
+    check('version 1.12.1', '1.12.1' in page.evaluate("import('./js/app.js').then(m => m.APP_VERSION)"))
     check('no page errors', not errors, '; '.join(errors[:3]))
     b.close()
 print(f'{sum(results)}/{len(results)} passed')

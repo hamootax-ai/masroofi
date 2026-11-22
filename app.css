@@ -278,4 +278,12 @@ button, a, input, select, textarea, label { touch-action: manipulation; }
 .sheethd .iconbtn { min-width: 40px; height: 40px; font-size: 1rem; }
 .cdday { display: flex; justify-content: space-between; color: var(--mute); font-weight: 700; font-size: .9rem; margin: 16px 0 0; padding: 6px 10px; background: var(--bg2); border-radius: 10px; }
 .cdlist .item { padding: 10px 2px; cursor: pointer; }
+/* v1.12.1: a colour per day (--dc set on the group): stripe on the header + its rows (inline-start = the right side in RTL) */
+.cdgrp { --dc: var(--blue); margin-top: 22px; }
+.cdgrp:first-of-type { margin-top: 14px; }
+.cdgrp .cdday { margin: 0; border-inline-start: 4px solid var(--dc); background: var(--bg2); background: color-mix(in srgb, var(--dc) 13%, var(--bg2)); }
+.cdgrp .cdday > span:first-child { color: var(--dc); }
+.cdgrp .cdday .amt { color: var(--text); }
+.cdgrp .cdlist .item { border-inline-start: 3px solid var(--dc); padding-inline-start: 10px; padding-inline-end: 2px; }
+.cdnum { display: inline-grid; place-items: center; min-width: 20px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--dc); color: #10141b; font-size: .72rem; font-weight: 800; margin-inline-end: 6px; vertical-align: 1px; font-variant-numeric: tabular-nums; }
 .cdlist .item:active { background: var(--soft); }

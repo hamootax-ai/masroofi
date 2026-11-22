@@ -5,7 +5,7 @@ import * as C from './claude.js';
 import * as SMS from './sms.js';
 import * as IN from './inbox.js';
 
-export const APP_VERSION = '1.12.0';
+export const APP_VERSION = '1.12.1';
 // (2026-11-14, Ahmad: "for now yes lets keep it manual") manual logging only: the bank-SMS import + auto inbox are hidden (code kept: set false to bring them back)
 // (same day, later: "نكمله اوتوماتيكي") back on: manual logging AND the automatic bank-SMS inbox
 const MANUAL_ONLY = false;
@@ -430,6 +430,7 @@ VIEWS.month = () => {
 // (v1.12, 2026-11-23, Ahmad: tap a category on the month tab -> what exactly went on it) the month's entries of one category,
 // grouped by day (newest day first), its total on top. Same list monthStats().byCat sums, so it always adds up to the row.
 const CHEV_SVG = '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+const DAY_COLORS = ['#6cb2ff', '#3fd0c9', '#b48cff', '#f2b84b', '#ff8fb8', '#45d38a']; // calm on dark: blue, teal, violet, amber, pink, green
 function catDetailSheet(catId, ym) {
   const c = L.catById(state, catId);
   const list = L.catEntries(state, ym, catId);
@@ -438,8 +439,10 @@ function catDetailSheet(catId, ym) {
   for (const e of list) (days[e.date] ||= []).push(e);
   const dayKeys = Object.keys(days).sort().reverse();
   const dayHd = d => `${AR_DAYS[parseYmd(d).getDay()]} ${dateShort(d)}`;
-  const groups = dayKeys.map(d => { const its = days[d].sort((a, b) => a.ts - b.ts); return `<div class="cdday" data-date="${d}"><span>${dayHd(d)}</span><span class="amt">${jd(L.sum(its))}</span></div>
-    <ul class="list cdlist">${its.map(e => `<li class="item tap" data-cdid="${e.id}" role="button" tabindex="0"><div class="main"><div class="t">${esc(e.note || e.sub || c?.name || '')}</div><div class="s">${e.sub && e.note ? esc(e.sub) + ' · ' : ''}${L.ACCOUNTS[e.from] || ''}${e.rafah ? ' · <span class="pill warn">رفاهية</span>' : ''}</div></div><div class="v amt">${jd(e.amount)}</div>${CHEV_SVG}</li>`).join('')}</ul>`; }).join('');
+  // (v1.12.1, Ahmad: "خليها اسهل للقراءة، ميز التواريخ بالوان") each day group gets its own colour (cycling, so neighbours always
+  // differ): a stripe on the header and on every row under it + the day number in a small chip, so each item visibly belongs to its day
+  const groups = dayKeys.map((d, gi) => { const its = days[d].sort((a, b) => a.ts - b.ts); return `<section class="cdgrp" style="--dc:${DAY_COLORS[gi % DAY_COLORS.length]}"><div class="cdday" data-date="${d}"><span>${dayHd(d)}</span><span class="amt">${jd(L.sum(its))}</span></div>
+    <ul class="list cdlist">${its.map(e => `<li class="item tap" data-cdid="${e.id}" role="button" tabindex="0"><div class="main"><div class="t">${esc(e.note || e.sub || c?.name || '')}</div><div class="s"><span class="cdnum">${parseYmd(d).getDate()}</span>${e.sub && e.note ? esc(e.sub) + ' · ' : ''}${L.ACCOUNTS[e.from] || ''}${e.rafah ? ' · <span class="pill warn">رفاهية</span>' : ''}</div></div><div class="v amt">${jd(e.amount)}</div>${CHEV_SVG}</li>`).join('')}</ul></section>`; }).join('');
   openSheet(`<div class="sheethd"><h3>${esc(c?.icon || '')} ${esc(c?.name || 'محذوفة')}</h3><button class="iconbtn" id="cdClose" aria-label="سكّر">✕</button></div>
     <div class="sub">${monthLabel(ym)} · ${list.length ? nItems(list.length) : 'ما في بنود'}</div>
     <div class="totalrow"><span>المجموع</span><span class="amt" id="cdTotal">${jd(total)}</span></div>
